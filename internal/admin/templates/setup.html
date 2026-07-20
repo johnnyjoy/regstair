@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Set up Regstair</title>
+  <link rel="stylesheet" href="{{.StylesheetURL}}">
+  <script src="{{.ScriptURL}}" defer></script>
+</head>
+<body class="setup-page">
+  <main class="setup-shell">
+    <section class="setup-identity" aria-labelledby="setup-product">
+      <p class="setup-mark">Regstair</p>
+      <div>
+        <p class="setup-kicker">Registry control plane</p>
+        <h1 id="setup-product">One endpoint.<br>Every approved registry.</h1>
+        <p class="setup-lead">Establish the administrator who will manage access, credentials, routing visibility, and audit history.</p>
+      </div>
+      <ol class="setup-readiness" aria-label="Initial configuration">
+        <li><span>01</span><strong>Local identity</strong><small>Separate web and Docker credentials</small></li>
+        <li><span>02</span><strong>Controlled access</strong><small>Immediate revocation and audit</small></li>
+        <li><span>03</span><strong>Registry reach</strong><small>User credentials stay encrypted</small></li>
+      </ol>
+    </section>
+    <section class="setup-workspace" aria-labelledby="setup-title">
+      <div class="setup-tools">
+        <label class="theme-control"><span>Theme</span><select id="setup-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      </div>
+      <div class="setup-form-wrap">
+        <p class="setup-step">First-run setup</p>
+        <h2 id="setup-title">Create the first administrator</h2>
+        <p class="subtle">This account owns the initial control plane. You can add or transfer administration after signing in.</p>
+        <form id="setup-form" data-setup-token="{{.SetupToken}}">
+          <div class="form-grid">
+            <label><span>Display name</span><input name="display_name" autocomplete="name" autofocus></label>
+            <label><span>Email</span><input name="email" type="email" autocomplete="email"></label>
+          </div>
+          <label><span>Username</span><input name="username" autocomplete="username" required maxlength="128"></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="15" maxlength="128"><small>Use 15 to 128 characters. This password is only for the web control plane.</small></label>
+          <label><span>Confirm password</span><input name="confirm_password" type="password" autocomplete="new-password" required minlength="15" maxlength="128"></label>
+          <div id="setup-result" class="form-result" role="alert" aria-live="assertive"></div>
+          <button type="submit">Create administrator</button>
+        </form>
+        <p class="setup-security"><strong>Security boundary</strong><br>Complete setup over a trusted connection before exposing Regstair to other networks. The first successful creation permanently closes this endpoint.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

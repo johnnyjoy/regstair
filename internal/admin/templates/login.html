@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sign in | Regstair</title>
+  <link rel="stylesheet" href="{{.StylesheetURL}}">
+  <script src="{{.ScriptURL}}" defer></script>
+</head>
+<body class="login-page">
+  <main id="main" class="login-main">
+    <section class="login-panel" aria-labelledby="login-title">
+      <a class="brand login-brand" href="/login">Regstair</a>
+      <h1 id="login-title">Sign in</h1>
+      <p class="subtle">Use your local Regstair account.</p>
+      <form id="login-form">
+        <label><span>Username</span><input name="username" autocomplete="username" required autofocus></label>
+        <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <div id="login-result" class="form-result" role="alert" aria-live="assertive"></div>
+        <button type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{.PageTitle}} | Regstair</title>
+  <link rel="stylesheet" href="{{.StylesheetURL}}">
+  <script src="{{.ScriptURL}}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <a class="brand" href="/" aria-label="Regstair overview">Regstair</a>
+      <nav aria-label="Sections">
+        <a href="/"{{if eq .Page "overview"}} aria-current="page"{{end}}>Overview</a>
+        {{if .User}}<a href="/account"{{if eq .Page "account"}} aria-current="page"{{end}}>Account</a>{{end}}
+        {{if .IsAdmin}}
+        {{if .User}}<a href="/admin/users"{{if eq .Page "users"}} aria-current="page"{{end}}>Users</a><a href="/admin/audit"{{if eq .Page "audit"}} aria-current="page"{{end}}>Audit</a>{{end}}
+        <a href="/requests"{{if or (eq .Page "requests") (eq .Page "request-detail")}} aria-current="page"{{end}}>Requests</a>
+        <a href="/routes"{{if eq .Page "routes"}} aria-current="page"{{end}}>Routes</a>
+        <a href="/sources"{{if eq .Page "sources"}} aria-current="page"{{end}}>Sources</a>
+        <a href="/cache"{{if eq .Page "cache"}} aria-current="page"{{end}}>Cache</a>
+        {{end}}
+      </nav>
+    </aside>
+
+    <main id="main">
+      <header id="overview" class="page-header">
+        <div>
+          <h1>{{.PageTitle}}</h1>
+          <p class="subtle">{{.PageSubtitle}}</p>
+        </div>
+        <div class="page-tools">
+          <label class="theme-control" for="theme"><span>Theme</span><select id="theme" name="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          {{if .User}}<button type="button" id="logout" class="secondary">Sign out</button>{{end}}
+          <span id="theme-status" class="visually-hidden" aria-live="polite"></span>
+        </div>
+      </header>
+
+      {{if .User}}
+      {{if eq .Page "account"}}
+      <section id="account" class="panel" aria-labelledby="account-title">
+        <div class="panel-header"><h2 id="account-title">Account</h2></div>
+        <dl class="account-summary"><div><dt>Name</dt><dd>{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}Not set{{end}}</dd></div><div><dt>Username</dt><dd><code>{{.User.Username}}</code></dd></div><div><dt>Email</dt><dd>{{if .User.Email}}{{.User.Email}}{{else}}Not set{{end}}</dd></div><div><dt>Access</dt><dd><span class="status neutral">{{.User.Access}}</span></dd></div></dl>
+        <details class="inline-workflow"><summary>Change password</summary><form id="password-change-form" class="compact-form"><label><span>Current password</span><input name="current_password" type="password" autocomplete="current-password" required></label><label><span>New password</span><input name="new_password" type="password" autocomplete="new-password" required></label><div class="form-result" role="status" aria-live="polite"></div><button type="submit">Change password</button></form></details>
+      </section>
+
+      <section id="tokens" class="panel" aria-labelledby="tokens-title"><div class="panel-header split-heading"><div><h2 id="tokens-title">Docker tokens</h2><p class="panel-summary">Use your username and a time-limited token with <code>docker login</code>.</p></div><button type="button" id="token-create-open">Create token</button></div>{{if .DockerTokens}}<div class="table-region" role="region" aria-labelledby="tokens-title" tabindex="0"><table><caption>Your Docker access tokens</caption><thead><tr><th scope="col">Label</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>{{range .DockerTokens}}<tr><td>{{if .Label}}{{.Label}}{{else}}<span class="subtle">Unlabeled</span>{{end}}</td><td><time>{{.CreatedAt.Format "2006-01-02 15:04 UTC"}}</time></td><td><time>{{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}</time></td><td>{{if .LastUsed.IsZero}}<span class="subtle">Never</span>{{else}}<time>{{.LastUsed.Format "2006-01-02 15:04 UTC"}}</time>{{end}}</td><td>{{if .RevokedAt.IsZero}}<span class="status success">issued</span>{{else}}<span class="status danger">revoked</span>{{end}}</td><td>{{if .RevokedAt.IsZero}}<button type="button" class="secondary token-revoke" data-token-id="{{.ID}}">Revoke</button>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty">No Docker tokens issued.</p>{{end}}</section>
+
+      <dialog id="token-create-dialog" aria-labelledby="token-create-title"><form id="token-create-form"><div class="dialog-header"><h2 id="token-create-title">Create Docker token</h2><button type="button" class="icon-button token-dialog-close" aria-label="Close token dialog">&times;</button></div><label><span>Label</span><input name="label" required maxlength="100" placeholder="Workstation or CI job"></label><label><span>Expires after</span><select name="expires_in_days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label><div id="token-secret-result" class="one-time-secret" hidden><strong>Copy this token now. It will not be shown again.</strong><div class="secret-copy-row"><code></code><button type="button" id="token-copy" class="secondary">Copy token</button></div><label class="token-acknowledgment"><input type="checkbox" id="token-retained"><span>I have stored this token securely.</span></label></div><div class="form-result" role="status" aria-live="polite"></div><div class="dialog-actions"><button type="button" class="secondary token-dialog-close">Close</button><button type="submit">Create token</button></div></form></dialog>
+
+      <section id="credentials" class="panel" aria-labelledby="credentials-title">
+        <div class="panel-header split-heading"><div><h2 id="credentials-title">Registry credentials</h2><p class="panel-summary">Credentials are used only after routing selects an approved registry and that registry requires authentication.</p></div></div>
+        {{if not .CredentialsAvailable}}<p class="notice warning-notice" role="status">Credential storage is unavailable. An administrator must configure the encryption key.</p>{{else if .CredentialRows}}
+        <div class="credential-list">
+          {{range .CredentialRows}}
+          <article class="credential-item" data-source-id="{{.Registry.ID}}" data-source-name="{{.Registry.Name}}">
+            <div class="credential-main">
+              <div><h3>{{if .Registry.Name}}{{.Registry.Name}}{{else}}{{.Registry.ID}}{{end}}</h3><code>{{.Registry.ID}}</code></div>
+              <div class="capabilities" aria-label="Allowed operations">{{if .Registry.Pull}}<span class="status neutral">pull</span>{{end}} {{if .Registry.Push}}<span class="status neutral">push</span>{{end}}</div>
+            </div>
+            <p class="subtle">{{if .Registry.Guidance}}{{.Registry.Guidance}}{{else}}Use credentials issued by this registry. Public pulls remain anonymous when the registry permits them.{{end}}</p>
+            <div class="credential-state">
+              {{if .Credential}}<span class="status success">verified</span><span>Username <code>{{.Credential.Username}}</code></span><time datetime="{{.Credential.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}">Updated {{.Credential.UpdatedAt.Format "2006-01-02 15:04 UTC"}}</time>{{else}}<span class="status neutral">not configured</span>{{end}}
+            </div>
+            <div class="credential-actions">
+              <button type="button" class="secondary credential-open">{{if .Credential}}Replace credential{{else}}Add credential{{end}}</button>
+              {{if .Credential}}<button type="button" class="danger-button credential-remove">Remove</button>{{end}}
+            </div>
+          </article>
+          {{end}}
+        </div>
+        {{else}}<p class="empty">No approved registries are available for your routes.</p>{{end}}
+      </section>
+
+      <dialog id="credential-dialog" aria-labelledby="credential-dialog-title">
+        <form id="credential-form">
+          <div class="dialog-header"><div><h2 id="credential-dialog-title">Add registry credential</h2><p id="credential-dialog-source" class="subtle"></p></div><button type="button" class="icon-button dialog-close" aria-label="Close dialog">&times;</button></div>
+          <input type="hidden" name="source_id">
+          <label><span>Registry username</span><input name="username" autocomplete="username" required maxlength="256"></label>
+          <label><span>Password or access token</span><span class="secret-control"><input name="secret" type="password" autocomplete="new-password" required maxlength="4096"><button type="button" class="icon-button secret-toggle" aria-label="Show secret" aria-pressed="false">Show</button></span><small>Regstair verifies this value before encrypting it. It cannot be viewed after saving.</small></label>
+          <div id="credential-result" class="form-result" role="status" aria-live="polite"></div>
+          <div class="dialog-actions"><button type="button" class="secondary dialog-close">Cancel</button><button type="submit">Verify and save</button></div>
+        </form>
+      </dialog>
+
+      <details class="help-panel"><summary>Account and access help</summary><div class="help-content"><p><strong>Docker tokens</strong> authenticate you to Regstair and can be revoked independently. The token value appears once.</p><p><strong>Registry credentials</strong> authenticate Regstair to a selected upstream only when its policy requires them. Public pulls stay anonymous when allowed.</p><p><strong>Administrators</strong> should create or promote another enabled administrator before transferring ownership. Host-level recovery remains available for lockout.</p></div></details>
+      {{end}}
+
+      {{if eq .Page "audit"}}
+      <section id="audit" class="panel" aria-labelledby="audit-title">
+        <div class="panel-header"><h2 id="audit-title">Audit activity</h2><p class="panel-summary">Security and account changes. Secret values are never recorded.</p></div>
+        <form class="audit-filters" method="get" action="/admin/audit" aria-label="Audit filters">
+          <strong>Audit filters</strong>
+          <label><span>Action</span><select name="action"><option value="">All actions</option>{{range .AuditActionOptions}}<option value="{{.Action}}" {{if eq $.AuditFilters.Action .Action}}selected{{end}}>{{.Label}}</option>{{end}}</select></label>
+          <label><span>Outcome</span><select name="outcome"><option value="">All outcomes</option><option value="success" {{if eq .AuditFilters.Outcome "success"}}selected{{end}}>Success</option><option value="failure" {{if eq .AuditFilters.Outcome "failure"}}selected{{end}}>Failure</option></select></label>
+          <label><span>Actor ID</span><input name="actor" value="{{.AuditFilters.Actor}}"></label>
+          <label><span>Target ID</span><input name="target" value="{{.AuditFilters.Target}}"></label>
+          <label><span>Correlation ID</span><input name="correlation" value="{{.AuditFilters.Correlation}}"></label>
+          <div class="filter-actions"><button type="submit">Apply filters</button>{{if or .AuditFilters.Action .AuditFilters.Outcome .AuditFilters.Actor .AuditFilters.Target .AuditFilters.Correlation}}<a href="/admin/audit">Clear</a>{{end}}</div>
+        </form>
+        <p class="result-summary">{{.AuditMatchCount}} matching {{if eq .AuditMatchCount 1}}event{{else}}events{{end}} from the latest 100 recorded events</p>
+        {{if .AuditRows}}<div class="table-region" role="region" aria-labelledby="audit-title" tabindex="0"><table class="audit-table"><caption>Filtered audit activity</caption><thead><tr><th scope="col">Time</th><th scope="col">Activity</th><th scope="col">Actor</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Correlation</th></tr></thead><tbody>{{range .AuditRows}}<tr><td><time datetime="{{.Event.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Event.Timestamp.Format "2006-01-02 15:04 UTC"}}</time></td><td><strong>{{.ActionLabel}}</strong><br><code>{{.Event.Action}}</code>{{if .Detail}}<br><span class="subtle">{{.Detail}}</span>{{end}}</td><td>{{.ActorLabel}}</td><td>{{.TargetLabel}}</td><td>{{if eq .Event.Outcome "success"}}<span class="status success">success</span>{{else}}<span class="status danger">failure</span>{{end}}</td><td>{{if .Event.CorrelationID}}<a href="/admin/audit?correlation={{.Event.CorrelationID}}"><code>{{.Event.CorrelationID}}</code></a>{{else}}<span class="subtle">Not recorded</span>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty">No audit events match these filters.</p>{{end}}
+      </section>
+      {{end}}
+
+      {{if .IsAdmin}}
+      {{if eq .Page "users"}}
+      <section id="users" class="panel" aria-labelledby="users-title">
+        <div class="panel-header split-heading"><div><h2 id="users-title">Users</h2><p class="panel-summary">Role, enabled state, and credential access take effect immediately.</p></div><button type="button" id="user-create-open">Add user</button></div>
+        <div class="ownership-notice"><strong>Administrator continuity</strong><span>Regstair protects the last enabled administrator. Create or promote another administrator before transferring ownership; host-level password recovery remains available for lockout.</span></div>
+        <div class="table-region" role="region" aria-labelledby="users-title" tabindex="0"><table><caption>Local Regstair users</caption><thead><tr><th scope="col">User</th><th scope="col">Contact</th><th scope="col">Role</th><th scope="col">State</th><th scope="col">Modified</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>{{range .Users}}<tr class="user-row" data-user-id="{{.ID}}" data-username="{{.Username}}" data-current-access="{{.Access}}" data-current-enabled="{{.Enabled}}" data-mtime="{{.UpdatedAt.Format "2006-01-02T15:04:05.999999999Z07:00"}}"><td><strong>{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}}</strong><br><code>{{.Username}}</code>{{if eq .ID $.User.ID}} <span class="status info">you</span>{{end}}</td><td>{{if .Email}}{{.Email}}{{else}}<span class="subtle">Not set</span>{{end}}</td><td><select class="user-access" aria-label="Access for {{.Username}}" {{if eq .ID $.User.ID}}disabled{{end}}><option value="user" {{if eq .Access "user"}}selected{{end}}>User</option><option value="admin" {{if eq .Access "admin"}}selected{{end}}>Administrator</option></select></td><td><label class="toggle-label"><input type="checkbox" class="user-enabled" {{if .Enabled}}checked{{end}} {{if eq .ID $.User.ID}}disabled{{end}}><span>Enabled</span></label></td><td><time datetime="{{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.UpdatedAt.Format "2006-01-02 15:04 UTC"}}</time></td><td>{{if ne .ID $.User.ID}}<div class="row-actions"><button type="button" class="secondary user-save">Review changes</button><button type="button" class="secondary user-reset-open" data-username="{{.Username}}">Reset password</button></div>{{else}}<span class="subtle">Use Account for your password.</span>{{end}}</td></tr>{{end}}</tbody></table></div>
+      </section>
+
+      <dialog id="user-create-dialog" aria-labelledby="user-create-title"><form id="user-create-form"><div class="dialog-header"><h2 id="user-create-title">Add user</h2><button type="button" class="icon-button user-dialog-close" aria-label="Close add user dialog">&times;</button></div><div class="form-grid"><label><span>Username</span><input name="username" autocomplete="off" required></label><label><span>Display name</span><input name="display_name" autocomplete="off"></label><label><span>Email</span><input name="email" type="email" autocomplete="off"></label><label><span>Initial password</span><input name="password" type="password" autocomplete="new-password" required></label><label><span>Access</span><select name="access"><option value="user">User</option><option value="admin">Administrator</option></select></label><label class="toggle-label"><input name="enabled" type="checkbox" checked><span>Enabled</span></label></div><div class="form-result" role="status" aria-live="polite"></div><div class="dialog-actions"><button type="button" class="secondary user-dialog-close">Cancel</button><button type="submit">Create user</button></div></form></dialog>
+      <dialog id="user-reset-dialog" aria-labelledby="user-reset-title"><form id="user-reset-form"><div class="dialog-header"><div><h2 id="user-reset-title">Reset password</h2><p class="subtle"></p></div><button type="button" class="icon-button reset-dialog-close" aria-label="Close password reset dialog">&times;</button></div><input type="hidden" name="user_id"><label><span>New password</span><input name="password" type="password" autocomplete="new-password" required></label><p class="notice warning-notice">Resetting the password immediately revokes this user's web sessions and Docker tokens.</p><div class="form-result" role="status" aria-live="polite"></div><div class="dialog-actions"><button type="button" class="secondary reset-dialog-close">Cancel</button><button type="submit">Reset password</button></div></form></dialog>
+      {{end}}
+      {{end}}
+      {{end}}
+
+      {{if .IsAdmin}}
+      {{if eq .Page "overview"}}
+      <section class="health-strip" aria-label="System health">
+        {{range .HealthItems}}<div class="health-item"><span>{{.Name}}</span><strong class="health-{{.Tone}}">{{.Status}}</strong><small>{{.Detail}}</small></div>{{end}}
+      </section>
+
+      <section class="dashboard-metrics" aria-labelledby="operating-metrics-title">
+        <div class="section-heading"><div><h2 id="operating-metrics-title">Operating metrics</h2><p>{{.DashboardWindow}}</p></div><a href="/requests">View requests</a></div>
+        <div class="metric-grid">
+          <div class="metric"><span class="label">Requests</span><strong>{{.RequestCount}}</strong><small>All recorded operations</small></div>
+          <div class="metric"><span class="label">Failure rate</span><strong>{{.FailureRate}}</strong><small>Errors / requests</small></div>
+          <div class="metric"><span class="label">Cache hit ratio</span><strong>{{.CacheHitRatio}}</strong><small>Hits / cache attempts</small></div>
+          <div class="metric"><span class="label">Average response</span><strong>{{.AverageDuration}}</strong><small>Recorded durations</small></div>
+          <div class="metric"><span class="label">p95 response</span><strong>{{.P95Duration}}</strong><small>Recorded durations</small></div>
+        </div>
+      </section>
+
+      <div class="dashboard-columns">
+        <section class="panel attention-panel" aria-labelledby="attention-title">
+          <div class="panel-header"><h2 id="attention-title">Needs attention</h2><p class="panel-summary">Current configuration and {{.DashboardWindow}} request outcomes.</p></div>
+          {{if .AttentionItems}}<div class="attention-list">{{range .AttentionItems}}<a href="{{.URL}}" class="attention-item attention-{{.Tone}}"><span class="attention-count">{{if .Count}}{{.Count}}{{else}}!{{end}}</span><span><strong>{{.Title}}</strong><small>{{.Detail}}</small></span><span aria-hidden="true">View</span></a>{{end}}</div>{{else}}<p class="empty success-message">No items currently require attention.</p>{{end}}
+        </section>
+
+        <section class="panel activity-panel" aria-labelledby="activity-title">
+          <div class="panel-header split-heading"><div><h2 id="activity-title">Recent activity</h2><p class="panel-summary">Latest operations within {{.DashboardWindow}}.</p></div><a href="/requests">View all</a></div>
+          {{if .RecentActivity}}<ol class="activity-list">{{range .RecentActivity}}<li><div><span class="status neutral">{{.Operation}}</span> {{if eq .Status "success"}}<span class="status success">{{.Status}}</span>{{else if eq .Status "denied"}}<span class="status danger">{{.Status}}</span>{{else}}<span class="status warning">{{.Status}}</span>{{end}}</div><a href="/requests?reference={{.LogicalReference}}"><code>{{.LogicalReference}}</code></a><small><time datetime="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04 UTC"}}</time> via <code>{{.SourceOrDestination}}</code></small></li>{{end}}</ol>{{else}}<p class="empty">No requests were recorded in this window.</p>{{end}}
+        </section>
+      </div>
+
+      <section class="inventory-strip" aria-label="Configured inventory">
+        <span><strong>{{.SourceCount}}</strong> sources</span><span><strong>{{.RouteCount}}</strong> routes</span><a href="/sources">Inspect configuration</a>
+      </section>
+      {{end}}
+
+      {{if eq .Page "requests"}}
+      <section id="requests" class="panel" aria-labelledby="requests-title">
+        <div class="panel-header request-heading">
+          <div><h2 id="requests-title">Request history</h2><p class="panel-summary">Newest recorded operations first unless another sort order is applied.</p></div>
+          {{if .HasFilters}}<a class="clear-link" href="/requests">Clear filters</a>{{end}}
+        </div>
+        <nav class="request-presets" aria-label="Request filter presets"><span>Presets</span><a href="/requests?window=24h">Last 24 hours</a><a href="/requests?status=error">Failures</a><a href="/requests?status=denied">Denied operations</a><a href="/requests?cache=miss">Cache misses</a><a href="/requests?operation=push">Recent pushes</a><a href="/requests?error_classification=upstream_authentication_failed">Authentication failures</a></nav>
+        {{if .FilterChips}}<div class="applied-filters" aria-label="Applied filters"><strong>Applied filters</strong>{{range .FilterChips}}<a href="{{.URL}}" aria-label="Remove {{.Label}}">{{.Label}} <span aria-hidden="true">&times;</span></a>{{end}}</div>{{end}}
+        <form class="filters" method="get" action="/requests" aria-label="Request filters">
+          <label class="filter-wide"><span>Reference</span><input type="search" name="reference" value="{{.Filters.Reference}}" placeholder="repository:tag or digest" aria-describedby="reference-help"><small id="reference-help" class="field-help">Matches any part of the logical reference.</small></label>
+          <label><span>Client identity</span><input type="text" name="client_identity" value="{{.Filters.ClientIdentity}}" aria-describedby="identity-help"><small id="identity-help" class="field-help">Identity authenticated by Regstair.</small></label>
+          <label><span>Route</span><select name="route"><option value="">All routes</option>{{range .Filters.Routes}}<option value="{{.}}" {{if eq $.Filters.Route .}}selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <fieldset class="operation-filter"><legend>Operation</legend><div class="segments"><label><input type="radio" name="operation" value="" {{if eq .Filters.Operation ""}}checked{{end}}><span>All</span></label><label><input type="radio" name="operation" value="pull" {{if eq .Filters.Operation "pull"}}checked{{end}}><span>Pull</span></label><label><input type="radio" name="operation" value="push" {{if eq .Filters.Operation "push"}}checked{{end}}><span>Push</span></label></div></fieldset>
+          <label><span>Source / destination</span><select name="source"><option value="">All sources</option>{{range .Filters.Sources}}<option value="{{.}}" {{if eq $.Filters.Source .}}selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label><span>Status</span><select name="status"><option value="">All statuses</option><option value="success" {{if eq .Filters.Status "success"}}selected{{end}}>Success</option><option value="denied" {{if eq .Filters.Status "denied"}}selected{{end}}>Denied</option><option value="error" {{if eq .Filters.Status "error"}}selected{{end}}>Error</option></select></label>
+          <label><span>Time range</span><select name="window"><option value="">Absolute / all time</option><option value="1h" {{if eq .Filters.Window "1h"}}selected{{end}}>Last hour</option><option value="24h" {{if eq .Filters.Window "24h"}}selected{{end}}>Last 24 hours</option><option value="7d" {{if eq .Filters.Window "7d"}}selected{{end}}>Last 7 days</option></select></label>
+          <label><span>Cache result</span><select name="cache"><option value="">All cache results</option><option value="hit" {{if eq .Filters.CacheResult "hit"}}selected{{end}}>Hit</option><option value="miss" {{if eq .Filters.CacheResult "miss"}}selected{{end}}>Miss</option><option value="bypassed" {{if eq .Filters.CacheResult "bypassed"}}selected{{end}}>Bypassed</option></select></label>
+          <label><span>Credential mode</span><select name="credential"><option value="">All credential modes</option><option value="anonymous" {{if eq .Filters.CredentialSource "anonymous"}}selected{{end}}>No upstream credential</option><option value="current_user" {{if eq .Filters.CredentialSource "current_user"}}selected{{end}}>Current user credential</option><option value="proxy" {{if eq .Filters.CredentialSource "proxy"}}selected{{end}}>Shared registry credential</option></select></label>
+          <label><span>Error classification</span><input type="text" name="error_classification" value="{{.Filters.ErrorClassification}}" list="error-classes" aria-describedby="classification-help"><small id="classification-help" class="field-help">Machine-readable failure category.</small><datalist id="error-classes"><option value="authorization_denied"><option value="upstream_authentication_failed"><option value="source_unavailable"><option value="fallback_blocked"><option value="not_found"></datalist></label>
+          <label><span>After <small>UTC</small></span><input type="datetime-local" name="after" value="{{.Filters.After}}"></label>
+          <label><span>Before <small>UTC</small></span><input type="datetime-local" name="before" value="{{.Filters.Before}}"></label>
+          <label><span>Rows</span><select name="limit"><option value="10" {{if eq .Filters.Limit 10}}selected{{end}}>10</option><option value="25" {{if eq .Filters.Limit 25}}selected{{end}}>25</option><option value="50" {{if eq .Filters.Limit 50}}selected{{end}}>50</option><option value="100" {{if eq .Filters.Limit 100}}selected{{end}}>100</option></select></label>
+          <label><span>Sort</span><select name="sort"><option value="">Newest first</option><option value="oldest" {{if eq .Filters.Sort "oldest"}}selected{{end}}>Oldest first</option></select></label>
+          <div class="filter-actions"><button type="submit">Apply filters</button></div>
+        </form>
+        {{if .Requests}}
+        <div class="table-region" role="region" aria-labelledby="requests-title" tabindex="0">
+          <table class="request-table">
+            <caption>Filtered request history, newest first</caption>
+            <thead><tr><th scope="col">Time</th><th scope="col">Operation</th><th scope="col">Reference</th><th scope="col">Result</th><th scope="col">Source / destination</th><th scope="col">Cache</th><th scope="col">Duration</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+            <tbody>{{range .Requests}}
+              <tr>
+                <td><time datetime="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04 UTC"}}</time></td>
+                <td><span class="status neutral">{{.Operation}}</span></td>
+                <td><code>{{.LogicalReference}}</code></td>
+                <td>{{if eq .Status "success"}}<span class="status success">{{.Status}}</span>{{else if eq .Status "denied"}}<span class="status danger">{{.Status}}</span>{{else}}<span class="status warning">{{.Status}}</span>{{end}}</td>
+                <td><code>{{.SourceOrDestination}}</code></td>
+                <td>{{if eq .CacheResult "hit"}}<span class="status success">cache hit</span>{{else if eq .CacheResult "miss"}}<span class="status warning">cache miss</span>{{else}}<span class="status neutral">{{.CacheResult}}</span>{{end}}</td>
+                <td>{{if .Duration}}{{.Duration.String}}{{else}}<span class="subtle">Not recorded</span>{{end}}</td>
+                <td><a class="secondary inspect-link" href="/requests/{{.ID}}" aria-label="Inspect request for {{.LogicalReference}}">Inspect</a></td>
+              </tr>
+            {{end}}</tbody>
+          </table>
+        </div>
+        <ol class="mobile-request-list" aria-label="Filtered request history">{{range .Requests}}<li><div><span class="status neutral">{{.Operation}}</span>{{if eq .Status "success"}}<span class="status success">{{.Status}}</span>{{else if eq .Status "denied"}}<span class="status danger">{{.Status}}</span>{{else}}<span class="status warning">{{.Status}}</span>{{end}}</div><a href="/requests/{{.ID}}"><code>{{.LogicalReference}}</code></a><span><code>{{.SourceOrDestination}}</code> / {{.CacheResult}}</span><small><time datetime="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04 UTC"}}</time>{{if .Duration}} / {{.Duration.String}}{{end}}</small></li>{{end}}</ol>
+        {{else}}<p class="empty">No requests recorded.</p>{{end}}
+        <nav class="pagination" aria-label="Request pages">{{if .PreviousURL}}<a href="{{.PreviousURL}}" rel="prev">Previous page</a>{{else}}<span></span>{{end}}<span class="page-count">Showing {{.RequestCount}} of {{.TotalRequestCount}} matching requests</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next">Next page</a>{{else}}<span></span>{{end}}</nav>
+      </section>
+
+      {{end}}
+
+      {{if eq .Page "request-detail"}}
+      {{with .RequestDetail}}
+      <div class="detail-toolbar"><a href="/requests">Back to requests</a><time datetime="{{.Event.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Event.Timestamp.Format "2006-01-02 15:04:05 UTC"}}</time></div>
+      <section class="investigation-summary detail-summary" aria-label="Investigation summary">
+        <div class="summary-wide"><span>Logical reference</span><code>{{.Event.LogicalReference}}</code></div>
+        <div><span>Outcome</span>{{if eq .Event.Status "success"}}<strong class="success-message">{{.Event.Status}}</strong>{{else if eq .Event.Status "denied"}}<strong class="error-message">{{.Event.Status}}</strong>{{else}}<strong class="error-message">{{.Event.Status}}</strong>{{end}}</div>
+        <div><span>Operation</span><strong>{{.Event.Operation}}</strong></div>
+        <div><span>Client</span><code>{{if .Event.ClientIdentity}}{{.Event.ClientIdentity}}{{else}}Anonymous{{end}}</code></div>
+        <div><span>Route</span><code>{{.Event.MatchedRoute}}</code></div>
+        <div><span>Source / destination</span><code>{{.Event.SourceOrDestination}}</code></div>
+        <div><span>Credential</span><strong>{{.Credential}}</strong></div>
+        <div><span>Cache</span><strong>{{.Event.CacheResult}}</strong></div>
+        <div><span>Duration</span><strong>{{.Duration}}</strong></div>
+        <div><span>Transferred</span><strong>{{.BytesTransferred}}</strong></div>
+        {{if .Event.ErrorClassification}}<div class="summary-wide"><span>Error classification</span><code class="classification">{{.Event.ErrorClassification}}</code></div>{{end}}
+      </section>
+      {{if .Event.ErrorClassification}}<section class="notice investigation-alert" aria-labelledby="investigation-alert-title"><h2 id="investigation-alert-title">What needs attention</h2><p>The request ended with <code>{{.Event.ErrorClassification}}</code>. Review the decision steps below and confirm the selected route, source, and credential state.</p></section>{{end}}
+      {{if .Event.Explanation}}<details class="technical-details" open><summary>Decision steps</summary><ol class="explanation">{{range .Event.Explanation}}<li>{{.}}</li>{{end}}</ol></details>{{end}}
+      <details class="technical-details"><summary>Authentication and cache</summary><dl class="technical-list"><dt>Credential source</dt><dd>{{.Credential}}</dd><dt>Cache result</dt><dd>{{.Event.CacheResult}}</dd><dt>Client identity</dt><dd>{{if .Event.ClientIdentity}}{{.Event.ClientIdentity}}{{else}}Anonymous{{end}}</dd></dl></details>
+      {{end}}
+      {{if .RequestProvenance}}<details class="technical-details"><summary>Provenance</summary><dl class="technical-list"><dt>Resolved digest</dt><dd>{{.RequestProvenance.ResolvedDigest}}</dd><dt>Physical reference</dt><dd>{{.RequestProvenance.PhysicalSourceReference}}</dd><dt>Source</dt><dd>{{.RequestProvenance.Source}}</dd><dt>Route</dt><dd>{{.RequestProvenance.Route}}</dd><dt>Retrieved</dt><dd>{{.RequestProvenance.RetrievedAt.Format "2006-01-02 15:04:05 UTC"}}</dd></dl></details>{{end}}
+      {{end}}
+
+      {{if eq .Page "routes"}}
+      <section id="routes" class="panel" aria-labelledby="routes-title">
+        <div class="panel-header"><h2 id="routes-title">Routes</h2></div>
+        <div class="table-region" role="region" aria-labelledby="routes-title" tabindex="0">
+          <table>
+            <caption>Configured routing rules in precedence order</caption>
+            <thead><tr><th scope="col">Name</th><th scope="col">Match</th><th scope="col">Pull order</th><th scope="col">Authority</th><th scope="col">Fallback</th><th scope="col">Push</th><th scope="col">Rewrite</th></tr></thead>
+            <tbody>{{range .Routes}}
+              <tr>
+                <td><code>{{.Name}}</code></td><td><code>{{.Match}}</code></td>
+                <td><code>{{range $i, $source := .Pull.Sources}}{{if $i}} &rarr; {{end}}{{$source}}{{end}}</code></td>
+                <td><code>{{.Pull.Authoritative}}</code></td>
+                <td>{{if .Pull.ExternalFallback}}<span class="status info">allowed</span>{{else}}<span class="status danger">blocked</span>{{end}}</td>
+                <td>{{if .Push.Deny}}<span class="status danger">denied</span>{{else}}<code>{{.Push.Destination}}</code>{{end}}</td>
+                <td><code>{{.Rewrite.StripPrefix}} &rarr; {{.Rewrite.AddPrefix}}</code></td>
+              </tr>
+            {{end}}</tbody>
+          </table>
+        </div>
+      </section>
+      {{end}}
+
+      {{if eq .Page "sources"}}
+      <section id="sources" class="panel" aria-labelledby="sources-title">
+        <div class="panel-header"><h2 id="sources-title">Sources</h2></div>
+        <div class="table-region" role="region" aria-labelledby="sources-title" tabindex="0">
+          <table>
+            <caption>Configured registry sources and redacted authentication state</caption>
+            <thead><tr><th scope="col">ID</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Endpoint</th><th scope="col">Auth mode</th><th scope="col">Credential</th><th scope="col">User credentials</th><th scope="col">Verification</th><th scope="col">Routes</th><th scope="col">State</th></tr></thead>
+            <tbody>{{range .Sources}}
+              <tr>
+                <td><code>{{.ID}}</code></td><td>{{.Name}}</td><td>{{.Type}}</td><td><code>{{.Endpoint}}</code></td>
+                <td>{{if eq .Auth.Mode "proxy"}}<span class="status info">proxy</span>{{else}}<span class="status neutral">none</span>{{end}}</td>
+                <td>{{if eq .Auth.Mode "proxy"}}<code>{{.Auth.CredentialRef}}</code> {{if .Auth.Configured}}<span class="status success">configured</span>{{else}}<span class="status danger">missing</span>{{end}}{{else}}<span class="subtle">not required</span>{{end}}</td>
+                <td>{{if .UserCredentials.Approved}}<span class="status success">approved</span> {{if .UserCredentials.Pull}}<span class="status neutral">pull</span>{{end}} {{if .UserCredentials.Push}}<span class="status neutral">push</span>{{end}}{{else}}<span class="subtle">not approved</span>{{end}}</td>
+                <td>{{if .UserCredentials.Approved}}<code>{{.UserCredentials.VerificationRepository}}</code>{{else}}<span class="subtle">not applicable</span>{{end}}</td>
+                <td>{{if .Routes}}{{range $i, $route := .Routes}}{{if $i}}, {{end}}<code>{{$route}}</code>{{end}}{{else}}<span class="subtle">unused</span>{{end}}</td>
+                <td>{{if .Enabled}}<span class="status success">enabled</span>{{else}}<span class="status danger">disabled</span>{{end}}</td>
+              </tr>
+            {{end}}</tbody>
+          </table>
+        </div>
+      </section>
+      {{end}}
+
+      {{if eq .Page "cache"}}
+      <section id="artifacts" class="panel" aria-labelledby="artifacts-title">
+        <div class="panel-header"><h2 id="artifacts-title">Cached tag mappings</h2></div>
+        {{if .Artifacts}}
+        <div class="table-region" role="region" aria-labelledby="artifacts-title" tabindex="0">
+          <table>
+            <caption>Cached logical tag to immutable digest mappings</caption>
+            <thead><tr><th scope="col">Logical reference</th><th scope="col">Digest</th><th scope="col">Source</th><th scope="col">Route</th><th scope="col">Fresh until</th></tr></thead>
+            <tbody>{{range .Artifacts}}<tr><td><code>{{.LogicalReference}}</code></td><td><code>{{.Mapping.Digest}}</code></td><td><code>{{.Mapping.Source}}</code></td><td><code>{{.Mapping.Route}}</code></td><td><time>{{.Mapping.FreshUntil}}</time></td></tr>{{end}}</tbody>
+          </table>
+        </div>
+        {{else}}<p class="empty">No cached tag mappings.</p>{{end}}
+      </section>
+      {{end}}
+      {{end}}
+
+      <div id="mutation-notice" class="mutation-notice" role="alert" hidden><div><strong></strong><p></p></div><a href="/login" hidden>Sign in again</a><button type="button" class="secondary" hidden>Reload page</button></div>
+      <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message"><form method="dialog"><div class="dialog-header"><h2 id="confirm-title">Confirm action</h2><button type="button" class="icon-button confirm-cancel" aria-label="Close confirmation">&times;</button></div><p id="confirm-message"></p><div class="dialog-actions"><button type="button" class="secondary confirm-cancel">Cancel</button><button type="button" id="confirm-action" class="danger-button">Confirm</button></div></form></dialog>
+
+      <footer class="page-footer">
+        <time class="generated" datetime="{{.GeneratedAtUTC}}">Updated {{.GeneratedAtUTC}}</time>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

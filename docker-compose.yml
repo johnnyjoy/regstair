@@ -1,0 +1,57 @@
+services:
+  regstair:
+    build: .
+    command:
+      - -config=/etc/regstair/regstair.yaml
+      - -content-root=/var/lib/regstair/content
+      - -listen=:8080
+      - -credential-key-id=${REGSTAIR_CREDENTIAL_KEY_ID:-}
+      - -credential-key-file=/run/secrets/regstair-credential-key
+    ports:
+      - "${REGSTAIR_BIND_ADDRESS:-127.0.0.1}:${REGSTAIR_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      REGSTAIR_CLIENT_CI_USERNAME: "${REGSTAIR_CLIENT_CI_USERNAME:-}"
+      REGSTAIR_CLIENT_CI_PASSWORD: "${REGSTAIR_CLIENT_CI_PASSWORD:-}"
+      REGSTAIR_UPSTREAM_USERNAME: "${REGSTAIR_UPSTREAM_USERNAME:-}"
+      REGSTAIR_UPSTREAM_PASSWORD: "${REGSTAIR_UPSTREAM_PASSWORD:-}"
+      REGSTAIR_HARBOR_USERNAME: "${REGSTAIR_HARBOR_USERNAME:-}"
+      REGSTAIR_HARBOR_PASSWORD: "${REGSTAIR_HARBOR_PASSWORD:-}"
+    volumes:
+      - ${REGSTAIR_CONFIG:-./config/regstair.example.yaml}:/etc/regstair/regstair.yaml:ro
+      - regstair-data:/var/lib/regstair/content
+      - ${REGSTAIR_CREDENTIAL_KEY_FILE:-/dev/null}:/run/secrets/regstair-credential-key:ro
+
+  internal-registry:
+    image: registry:2
+    ports:
+      - "${INTERNAL_REGISTRY_PORT:-5001}:5000"
+
+  external-registry:
+    image: registry:2
+    ports:
+      - "${EXTERNAL_REGISTRY_PORT:-5002}:5000"
+
+  destination-registry:
+    image: registry:2
+    ports:
+      - "${DESTINATION_REGISTRY_PORT:-5003}:5000"
+
+  authenticated-registry:
+    image: registry:2
+    profiles:
+      - proxy-auth
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: Regstair upstream fixture
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+    ports:
+      - "${AUTHENTICATED_REGISTRY_PORT:-5004}:5000"
+    volumes:
+      - ./config/fixtures/registry.htpasswd:/auth/htpasswd:ro
+      - authenticated-registry-data:/var/lib/registry
+
+volumes:
+  regstair-data:
+  authenticated-registry-data:
