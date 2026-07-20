@@ -25,10 +25,9 @@ var (
 const SourceCache = "local-cache"
 
 type PullRequest struct {
-	Repository     string
-	Reference      string
-	ClientIdentity string
-	Principal      identity.Principal
+	Repository string
+	Reference  string
+	Principal  identity.Principal
 }
 
 type PullResult struct {
@@ -98,11 +97,11 @@ func (r *PullResolver) Pull(ctx context.Context, request PullRequest) (PullResul
 	if err != nil {
 		return PullResult{}, err
 	}
-	if !r.authorized(requestPrincipal(request.ClientIdentity, request.Principal), metadata.OperationPull, decision.RouteName) {
+	if !r.authorized(request.Principal, metadata.OperationPull, decision.RouteName) {
 		if err := r.recordUnauthorizedPull(ctx, started, request, decision); err != nil {
 			return PullResult{}, err
 		}
-		return PullResult{}, fmt.Errorf("%w: client %q cannot pull route %q", ErrUnauthorized, request.ClientIdentity, decision.RouteName)
+		return PullResult{}, fmt.Errorf("%w: client %q cannot pull route %q", ErrUnauthorized, request.Principal.EventIdentity(), decision.RouteName)
 	}
 
 	if result, ok, err := r.tryCache(ctx, started, request, decision); err != nil {
@@ -112,7 +111,7 @@ func (r *PullResolver) Pull(ctx context.Context, request PullRequest) (PullResul
 	}
 
 	logicalReference := referenceString(decision.LogicalRepository, decision.Reference)
-	principal := requestPrincipal(request.ClientIdentity, request.Principal)
+	principal := request.Principal
 	var lastErr error
 	for index, sourceID := range decision.CandidateSources {
 		connector := r.connectors[sourceID]
@@ -192,16 +191,6 @@ func (r *PullResolver) authorized(principal identity.Principal, operation metada
 	return r.authorizer == nil || r.authorizer.Authorize(principal, operation, route)
 }
 
-func requestPrincipal(clientIdentity string, principal identity.Principal) identity.Principal {
-	if principal.Kind != "" {
-		return principal
-	}
-	if clientIdentity == "" {
-		return identity.Anonymous()
-	}
-	return identity.Principal{Kind: identity.KindConfiguredClient, ID: clientIdentity}
-}
-
 func (r *PullResolver) cacheManifest(ctx context.Context, connector registry.Connector, repository string, manifest registry.Manifest) error {
 	if _, err := r.store.PutBlob(ctx, manifest.Digest, bytes.NewReader(manifest.Content)); err != nil {
 		return fmt.Errorf("cache manifest: %w", err)
@@ -234,7 +223,7 @@ func (r *PullResolver) tryCache(ctx context.Context, started time.Time, request 
 		credentialSource := "anonymous"
 		if r.provider != nil && cacheSource != "" {
 			var err error
-			if credentialSource, err = r.provider.AuthorizeCache(ctx, requestPrincipal(request.ClientIdentity, request.Principal), cacheSource, metadata.OperationPull); err != nil {
+			if credentialSource, err = r.provider.AuthorizeCache(ctx, request.Principal, cacheSource, metadata.OperationPull); err != nil {
 				return PullResult{}, false, err
 			}
 		}
@@ -265,7 +254,7 @@ func (r *PullResolver) tryCache(ctx context.Context, started time.Time, request 
 	credentialSource := "anonymous"
 	if r.provider != nil {
 		var err error
-		if credentialSource, err = r.provider.AuthorizeCache(ctx, requestPrincipal(request.ClientIdentity, request.Principal), mapping.Source, metadata.OperationPull); err != nil {
+		if credentialSource, err = r.provider.AuthorizeCache(ctx, request.Principal, mapping.Source, metadata.OperationPull); err != nil {
 			return PullResult{}, false, err
 		}
 	}
@@ -365,7 +354,7 @@ func (r *PullResolver) recordSuccessfulPull(ctx context.Context, started time.Ti
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPull,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		CredentialSource:    result.CredentialSource,
 		LogicalReference:    logicalReference,
 		MatchedRoute:        result.Route,
@@ -383,7 +372,7 @@ func (r *PullResolver) recordCacheHit(ctx context.Context, started time.Time, re
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPull,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		CredentialSource:    result.CredentialSource,
 		LogicalReference:    referenceString(decision.LogicalRepository, decision.Reference),
 		MatchedRoute:        result.Route,
@@ -423,7 +412,7 @@ func (r *PullResolver) recordFailedPull(ctx context.Context, started time.Time, 
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPull,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		LogicalReference:    referenceString(decision.LogicalRepository, decision.Reference),
 		MatchedRoute:        decision.RouteName,
 		Status:              status,
@@ -439,14 +428,14 @@ func (r *PullResolver) recordUnauthorizedPull(ctx context.Context, started time.
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPull,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		LogicalReference:    referenceString(decision.LogicalRepository, decision.Reference),
 		MatchedRoute:        decision.RouteName,
 		Status:              metadata.StatusDenied,
 		CacheResult:         metadata.CacheMiss,
 		Duration:            now.Sub(started),
 		ErrorClassification: "authorization_denied",
-		Explanation:         append(append([]string(nil), decision.Explanation...), fmt.Sprintf("client %q is not authorized for pull route %q", request.ClientIdentity, decision.RouteName)),
+		Explanation:         append(append([]string(nil), decision.Explanation...), fmt.Sprintf("client %q is not authorized for pull route %q", request.Principal.EventIdentity(), decision.RouteName)),
 	})
 }
 

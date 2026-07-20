@@ -33,11 +33,9 @@ type Pusher interface {
 }
 
 type Authenticator interface {
-	AuthenticateBasic(username string, password string) (principal identity.Principal, ok bool)
-	Enabled() bool
+	Issue(context.Context, string, string, string, []string) (string, time.Time, error)
+	Authenticate(context.Context, string, string, string) (identity.Principal, error)
 }
-
-type optionalAuthenticator interface{ AuthenticationRequired() bool }
 
 type Option func(*Server)
 
@@ -137,6 +135,46 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) ServeTokenHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	if r.Method != http.MethodGet {
+		writeOCIError(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "method not allowed")
+		return
+	}
+	if service := r.URL.Query().Get("service"); service != "" && service != "regstair" {
+		writeOCIError(w, http.StatusBadRequest, "DENIED", "invalid token service")
+		return
+	}
+	repository, actions, ok := parseTokenScope(r.URL.Query().Get("scope"))
+	if !ok {
+		writeOCIError(w, http.StatusBadRequest, "DENIED", "invalid repository scope")
+		return
+	}
+	username, secret, _ := r.BasicAuth()
+	keys := gatewayAuthenticationRateKeys(r.RemoteAddr, username)
+	if username != "" {
+		if allowed, retry := s.authLimiter.Allow(keys...); !allowed {
+			w.Header().Set("Retry-After", strconv.FormatInt(max(int64(retry.Round(time.Second)/time.Second), 1), 10))
+			writeOCIError(w, http.StatusTooManyRequests, "TOOMANYREQUESTS", "authentication temporarily unavailable")
+			return
+		}
+	}
+	token, expiresAt, err := s.authenticator.Issue(r.Context(), username, secret, repository, actions)
+	if err != nil {
+		if username != "" {
+			s.authLimiter.Failure(keys...)
+		}
+		writeAuthChallenge(w, r, repository, actions)
+		return
+	}
+	if username != "" {
+		s.authLimiter.Success(keys...)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"token": token, "access_token": token, "expires_in": max(int64(time.Until(expiresAt).Seconds()), 1), "issued_at": time.Now().UTC().Format(time.RFC3339)})
+}
+
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, repository string, reference string) {
 	if reference == "" {
 		writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest reference is required")
@@ -150,7 +188,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, reposito
 			return
 		}
 		principal := requestPrincipal(r.Context())
-		result, err := s.puller.Pull(r.Context(), resolution.PullRequest{Repository: repository, Reference: reference, Principal: principal, ClientIdentity: principal.EventIdentity()})
+		result, err := s.puller.Pull(r.Context(), resolution.PullRequest{Repository: repository, Reference: reference, Principal: principal})
 		if err != nil {
 			writePullError(w, err)
 			return
@@ -172,7 +210,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, reposito
 			return
 		}
 		principal := requestPrincipal(r.Context())
-		result, err := s.pusher.Push(r.Context(), resolution.PushRequest{Repository: repository, Reference: reference, Manifest: manifest, Principal: principal, ClientIdentity: principal.EventIdentity()})
+		result, err := s.pusher.Push(r.Context(), resolution.PushRequest{Repository: repository, Reference: reference, Manifest: manifest, Principal: principal})
 		if err != nil {
 			writePushError(w, err)
 			return
@@ -186,29 +224,34 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, reposito
 }
 
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) bool {
-	if s.authenticator == nil || !s.authenticator.Enabled() {
+	if s.authenticator == nil {
 		return true
 	}
-
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		if optional, isOptional := s.authenticator.(optionalAuthenticator); isOptional && !optional.AuthenticationRequired() {
-			return true
-		}
-		writeAuthChallenge(w)
+	repository, actions := requestScope(r)
+	action := ""
+	if len(actions) > 0 {
+		action = actions[0]
+	}
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		writeAuthChallenge(w, r, repository, actions)
 		return false
 	}
-	keys := gatewayAuthenticationRateKeys(r.RemoteAddr, username)
+	principal, err := s.authenticator.Authenticate(r.Context(), strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")), repository, action)
+	if err == nil && principal.Kind == identity.KindAnonymous {
+		*r = *r.WithContext(context.WithValue(r.Context(), principalKey{}, principal))
+		return true
+	}
+	keys := gatewayAuthenticationRateKeys(r.RemoteAddr, principal.Username)
 	if allowed, retry := s.authLimiter.Allow(keys...); !allowed {
 		w.Header().Set("Retry-After", strconv.FormatInt(max(int64(retry.Round(time.Second)/time.Second), 1), 10))
 		slog.Warn("authentication rate limit applied", "surface", "docker_auth")
 		writeOCIError(w, http.StatusTooManyRequests, "TOOMANYREQUESTS", "authentication temporarily unavailable")
 		return false
 	}
-	principal, ok := s.authenticator.AuthenticateBasic(username, password)
-	if !ok {
+	if err != nil {
 		s.authLimiter.Failure(keys...)
-		writeAuthChallenge(w)
+		writeAuthChallenge(w, r, repository, actions)
 		return false
 	}
 	s.authLimiter.Success(keys...)
@@ -225,9 +268,49 @@ func gatewayAuthenticationRateKeys(remoteAddress, username string) []string {
 	return []string{"docker:address:" + host, "docker:account:" + strings.ToLower(strings.TrimSpace(username))}
 }
 
-func writeAuthChallenge(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="Regstair"`)
+func writeAuthChallenge(w http.ResponseWriter, r *http.Request, repository string, actions []string) {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	challenge := fmt.Sprintf(`Bearer realm="%s://%s/auth/token",service="regstair"`, scheme, r.Host)
+	if repository != "" && len(actions) > 0 {
+		challenge += fmt.Sprintf(`,scope="repository:%s:%s"`, repository, strings.Join(actions, ","))
+	}
+	w.Header().Set("WWW-Authenticate", challenge)
 	writeOCIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+}
+
+func requestScope(r *http.Request) (string, []string) {
+	if r.URL.Path == "/v2/" {
+		return "", nil
+	}
+	repository, _, _, ok := parseV2Path(r.URL.Path)
+	if !ok {
+		return "", nil
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return repository, []string{"pull"}
+	}
+	return repository, []string{"push"}
+}
+
+func parseTokenScope(scope string) (string, []string, bool) {
+	if scope == "" {
+		return "", nil, true
+	}
+	parts := strings.Split(scope, ":")
+	if len(parts) != 3 || parts[0] != "repository" || parts[1] == "" {
+		return "", nil, false
+	}
+	actions := []string{}
+	for _, action := range strings.Split(parts[2], ",") {
+		if action != "pull" && action != "push" {
+			return "", nil, false
+		}
+		actions = append(actions, action)
+	}
+	return parts[1], actions, len(actions) > 0
 }
 
 type principalKey struct{}

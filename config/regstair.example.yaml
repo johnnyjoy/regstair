@@ -1,28 +1,5 @@
 version: 1
 
-# Optional Regstair client auth. When clients are configured, /v2/ requires
-# Basic auth and request events record the configured client id.
-#
-# clients:
-#   - id: ci-builder
-#     type: basic
-#     username_env: REGSTAIR_CLIENT_CI_USERNAME
-#     password_env: REGSTAIR_CLIENT_CI_PASSWORD
-#     allowed:
-#       pull:
-#         - curated-library
-#       push:
-#         - team-a-publish
-
-# Optional proxy-owned registry credentials. Keep secret values in env or Docker
-# secrets, then reference those env var names here.
-#
-# credentials:
-#   - id: harbor-robot
-#     type: basic
-#     username_env: REGSTAIR_HARBOR_USERNAME
-#     password_env: REGSTAIR_HARBOR_PASSWORD
-
 sources:
   - id: internal-curated
     name: Internal Curated Registry
@@ -41,21 +18,6 @@ sources:
     endpoint: http://destination-registry:5000
     type: internal
     enabled: true
-    user_credentials:
-      approved: true
-      pull: true
-      push: true
-      verification_repository: regstair/credential-check
-      guidance: Use a registry account or robot credential with access to the Team A project.
-      # Compose uses a private HTTP fixture. Production approved registries should use HTTPS.
-      allow_insecure: true
-    # auth:
-    #   mode: proxy
-    #   credential_ref: harbor-robot
-    #   # Add only host[:port] values explicitly trusted to receive this credential.
-    #   # Same-host token services are allowed automatically.
-    #   token_hosts:
-    #     - auth.example.com
 
 routes:
   - name: curated-library

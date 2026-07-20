@@ -7,9 +7,7 @@ harbor_version="${HARBOR_VERSION:-2.15.0}"
 project="${COMPOSE_PROJECT_NAME:-regstair-harbor-smoke}"
 harbor_project="${HARBOR_COMPOSE_PROJECT_NAME:-regstair-harbor}"
 admin_password="${HARBOR_ADMIN_PASSWORD:-regstair-harbor-admin}"
-client_username="${REGSTAIR_CLIENT_CI_USERNAME:-ci}"
-client_password="${REGSTAIR_CLIENT_CI_PASSWORD:-secret}"
-next_level="${REGSTAIR_NEXT_LEVEL_SMOKE:-0}"
+client_username="smoke-admin"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_root="${REGSTAIR_HARBOR_RUNTIME:-$repo_root/.runtime/harbor-smoke}"
 installer_dir="$runtime_root/harbor"
@@ -30,8 +28,8 @@ regstair_url="http://127.0.0.1:$regstair_port"
 config_path="$runtime_root/regstair-harbor.yaml"
 robot_file="$runtime_root/robot.json"
 credential_key_file="$runtime_root/regstair-credential-key"
-credential_key_id=""
-credential_key_mount="/dev/null"
+credential_key_id="harbor-smoke"
+credential_key_mount="$credential_key_file"
 
 for command in docker curl jq sha256sum awk python3 tar sed go; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -206,19 +204,6 @@ fi
 
 cat >"$config_path" <<'YAML'
 version: 1
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-    allowed:
-      pull: [harbor-team-a]
-      push: [harbor-team-a]
-credentials:
-  - id: harbor-robot
-    type: basic
-    username_env: REGSTAIR_HARBOR_USERNAME
-    password_env: REGSTAIR_HARBOR_PASSWORD
 sources:
   - id: harbor-team-a
     name: Harbor Team A
@@ -226,8 +211,6 @@ sources:
     type: internal
     enabled: true
     auth:
-      mode: proxy
-      credential_ref: harbor-robot
     user_credentials:
       approved: true
       pull: true
@@ -250,23 +233,10 @@ routes:
 YAML
 sed -i "s/HARBOR_PORT/$harbor_port/" "$config_path"
 
-if [[ "$next_level" == "1" ]]; then
-  awk '
-    /^credentials:/ { skipping_credentials=1; next }
-    skipping_credentials && /^sources:/ { skipping_credentials=0 }
-    skipping_credentials { next }
-    /^      mode: proxy$/ { print "      mode: current_user"; next }
-    /^      credential_ref:/ { next }
-    { print }
-  ' "$config_path" >"$config_path.next-level"
-  mv "$config_path.next-level" "$config_path"
-  umask 077
-  chmod 0600 "$credential_key_file" 2>/dev/null || true
-  head -c 32 /dev/urandom >"$credential_key_file"
-  chmod 0444 "$credential_key_file"
-  credential_key_id="next-level-smoke"
-  credential_key_mount="$credential_key_file"
-fi
+umask 077
+chmod 0600 "$credential_key_file" 2>/dev/null || true
+head -c 32 /dev/urandom >"$credential_key_file"
+chmod 0444 "$credential_key_file"
 
 config_body='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}'
 layer_body='seeded in Harbor for Regstair'
@@ -281,25 +251,18 @@ put_harbor_manifest regstair/base 1.0 "$manifest" "$seed_token"
 echo "Starting Regstair with the Harbor robot credential..."
 REGSTAIR_CONFIG="$config_path" \
 REGSTAIR_PORT="$regstair_port" \
-REGSTAIR_CLIENT_CI_USERNAME="$client_username" \
-REGSTAIR_CLIENT_CI_PASSWORD="$client_password" \
-REGSTAIR_HARBOR_USERNAME="$robot_name" \
-REGSTAIR_HARBOR_PASSWORD="$robot_secret" \
 REGSTAIR_CREDENTIAL_KEY_ID="$credential_key_id" \
 REGSTAIR_CREDENTIAL_KEY_FILE="$credential_key_mount" \
   docker compose -p "$project" up -d --build regstair
 wait_http "$regstair_url/healthz" "Regstair"
 
-if [[ "$next_level" == "1" ]]; then
-  echo "Bootstrapping the local administrator and saving that user's verified Harbor credential..."
-  client_username="smoke-admin"
-  bootstrap_admin_session "$regstair_url" "$client_username" "smoke administrator password"
-  admin_post "$regstair_url" "/admin/api/account/registry-credentials/harbor-team-a/verify-and-save" \
-    "$(jq -nc --arg username "$robot_name" --arg secret "$robot_secret" '{username:$username,secret:$secret}')" |
-    jq -e '.source_id == "harbor-team-a" and .username != "" and (.secret | not)' >/dev/null
-  client_password="$(admin_post "$regstair_url" "/admin/api/account/docker-tokens" \
-    '{"label":"clean-environment-smoke","expires_in_days":1}' | jq -er '.secret')"
-fi
+echo "Bootstrapping the local administrator and saving that user's verified Harbor credential..."
+bootstrap_admin_session "$regstair_url" "$client_username" "smoke administrator password"
+admin_post "$regstair_url" "/admin/api/account/registry-credentials/harbor-team-a/verify-and-save" \
+  "$(jq -nc --arg username "$robot_name" --arg secret "$robot_secret" '{username:$username,secret:$secret}')" |
+  jq -e '.source_id == "harbor-team-a" and .username != "" and (.secret | not)' >/dev/null
+client_password="$(admin_post "$regstair_url" "/admin/api/account/docker-tokens" \
+  '{"label":"harbor-smoke","expires_in_days":1}' | jq -er '.secret')"
 
 echo "Verifying Harbor pull through Regstair..."
 curl -fsS -u "$client_username:$client_password" \
@@ -320,23 +283,12 @@ curl -fsS -H "Authorization: Bearer $pull_token" \
   -H 'Accept: application/vnd.oci.image.manifest.v1+json' -o /dev/null \
   "$harbor_url/v2/regstair/published/manifests/1.0"
 
-if [[ "$next_level" != "1" ]]; then
-  bootstrap_admin_session "$regstair_url"
-fi
-admin_get "$regstair_url" "/admin/api/requests?limit=20" | jq -e --arg next_level "$next_level" '
-  if $next_level == "1" then
-    any(.requests[]; .logical_reference == "team-a/base:1.0" and .client_identity != "" and .credential_source == "current_user" and .operation == "pull" and .status == "success") and
-    any(.requests[]; .logical_reference == "team-a/published:1.0" and .client_identity != "" and .credential_source == "current_user" and .operation == "push" and .status == "success")
-  else
-    any(.requests[]; .logical_reference == "team-a/base:1.0" and .client_identity == "ci-builder" and .operation == "pull" and .status == "success") and
-    any(.requests[]; .logical_reference == "team-a/published:1.0" and .client_identity == "ci-builder" and .operation == "push" and .status == "success")
-  end
+admin_get "$regstair_url" "/admin/api/requests?limit=20" | jq -e '
+  any(.requests[]; .logical_reference == "team-a/base:1.0" and .client_identity != "" and .credential_source == "current_user" and .operation == "pull" and .status == "success") and
+  any(.requests[]; .logical_reference == "team-a/published:1.0" and .client_identity != "" and .credential_source == "current_user" and .operation == "push" and .status == "success")
 ' >/dev/null
 
 echo "Harbor integration smoke test passed."
-if [[ "$next_level" == "1" ]]; then
-  echo "Next-level clean-environment flow passed."
-fi
 echo "Harbor: $harbor_url"
 echo "Regstair: $regstair_url"
 echo "Stop Regstair: docker compose -p $project down"

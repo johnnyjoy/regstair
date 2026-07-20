@@ -12,47 +12,18 @@ import (
 	"regstair/internal/metadata"
 )
 
-func TestRunAdminBootstrapCreatesExactlyOneAdmin(t *testing.T) {
-	dir := t.TempDir()
-	database := filepath.Join(dir, "regstair.db")
-	passwordFile := filepath.Join(dir, "admin-password")
-	if err := os.WriteFile(passwordFile, []byte("correct horse battery staple\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	args := []string{"-metadata-path", database, "-username", "admin", "-password-file", passwordFile}
-	if err := runAdminBootstrap(args); err != nil {
-		t.Fatalf("runAdminBootstrap() error = %v", err)
-	}
-	if err := runAdminBootstrap(args); err == nil {
-		t.Fatal("second runAdminBootstrap() error = nil")
-	}
-	repo, err := metadata.NewSQLiteRepository(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer repo.Close()
-	user, err := repo.FindUserByUsername(context.Background(), "admin")
-	if err != nil || user == nil || user.Access != metadata.UserAccessAdmin || !user.Enabled {
-		t.Fatalf("bootstrap user = %#v, %v", user, err)
-	}
-}
-
 func TestRunAdminResetPasswordRevokesIdentityAndAuditsRecovery(t *testing.T) {
 	dir := t.TempDir()
 	database := filepath.Join(dir, "regstair.db")
-	oldFile := filepath.Join(dir, "old")
 	newFile := filepath.Join(dir, "new")
-	if err := os.WriteFile(oldFile, []byte("correct horse battery staple\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := runAdminBootstrap([]string{"-metadata-path", database, "-username", "admin", "-password-file", oldFile}); err != nil {
-		t.Fatal(err)
-	}
 	repo, err := metadata.NewSQLiteRepository(database)
 	if err != nil {
 		t.Fatal(err)
 	}
-	user, _ := repo.FindUserByUsername(context.Background(), "admin")
+	user, err := auth.NewAccountService(repo, auth.NewPasswordHasher(auth.DefaultPasswordParams, nil)).BootstrapAdmin(context.Background(), "admin", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
 	tokens := auth.NewDockerTokenService(repo, nil, nil)
 	issued, err := tokens.Issue(context.Background(), user.ID, "test", time.Hour)
 	if err != nil {
@@ -93,12 +64,6 @@ func TestRunAdminResetPasswordRevokesIdentityAndAuditsRecovery(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("recovery audit event missing")
-	}
-}
-
-func TestRunAdminBootstrapRequiresPasswordFile(t *testing.T) {
-	if err := runAdminBootstrap([]string{"-metadata-path", filepath.Join(t.TempDir(), "regstair.db"), "-username", "admin"}); err == nil {
-		t.Fatal("runAdminBootstrap() error = nil")
 	}
 }
 

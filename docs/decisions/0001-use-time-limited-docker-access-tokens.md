@@ -24,8 +24,11 @@ For this phase:
 - web passwords are not accepted as Docker credentials;
 - anonymous pulls remain available where global route policy permits them;
 - token values and authorization headers are excluded from logs, APIs, audit records, request events, and support output.
+- the registry endpoint uses the standard OCI Bearer challenge and issues short-lived repository-scoped access tokens;
+- anonymous clients may receive pull-scoped Bearer tokens, while push scope requires a valid local username and Docker access token;
+- every scoped-token request revalidates the originating Docker token and current user state.
 
-This is not a general OAuth or token-exchange platform. The implementation exists only to support ordinary Docker Basic credential submission to Regstair with independently manageable CLI secrets.
+This is not a general OAuth platform. Basic credentials are accepted only by the OCI token endpoint as Docker's mechanism for presenting the independently manageable CLI secret; registry operations use scoped Bearer tokens.
 
 ## Alternatives
 
@@ -49,21 +52,21 @@ Deferred because it exceeds the local-user phase and is not required for normal 
 
 - Add token records and repository operations under `internal/metadata/` using existing SQLite migration patterns.
 - Add generation, hashing, and validation services under `internal/auth/`.
-- Replace or extend the current YAML-client authenticator at the gateway boundary without weakening anonymous-route behavior.
+- Implement scoped Bearer authentication at the gateway boundary without weakening anonymous-route behavior.
 - Add account handlers and server-rendered token management after secure web sessions exist.
 - Update `scripts/docker-client-smoke.sh` or add a next-level smoke script using a generated token.
 - Reference ADR-0001 at the Docker authenticator entry point.
 
 ## Verification
 
-- [ ] Normal `docker login` succeeds with an active token.
+- [x] Normal `docker login` succeeds with an active token.
 - [ ] The local web password fails as a Docker credential.
-- [ ] Expired and revoked tokens fail.
-- [ ] Disabling the user invalidates their tokens.
-- [ ] Anonymous public pulls remain unchanged.
-- [ ] Database and response inspection cannot recover a raw token.
-- [ ] A token cannot grant more route authority than its owner.
-- [ ] Existing Docker-client compatibility tests remain green during migration.
+- [x] Expired and revoked tokens fail.
+- [x] Disabling the user invalidates their tokens.
+- [x] Anonymous public pulls remain unchanged.
+- [x] Database and response inspection cannot recover a raw token.
+- [x] A token cannot grant more route authority than its owner.
+- [x] Existing Docker-client compatibility tests remain green during migration.
 
 ## Non-Goals
 
@@ -72,4 +75,3 @@ Deferred because it exceeds the local-user phase and is not required for normal 
 - Upstream credential passthrough.
 - Enterprise OIDC or SAML.
 - A general-purpose API token platform.
-

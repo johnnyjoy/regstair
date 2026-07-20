@@ -20,7 +20,6 @@ var allowedAuditDetailKeys = map[string]struct{}{
 	"new_access":           {},
 	"enabled":              {},
 	"username":             {},
-	"credential_ref":       {},
 	"previous_key_id":      {},
 	"new_key_id":           {},
 	"credential_count":     {},

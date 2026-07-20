@@ -96,7 +96,7 @@ Authenticated users enter the Regstair application through product routes. Only 
 /admin/audit                Audit
 ```
 
-Administrators receive `/` as their landing page. Normal users are redirected to `/account` and do not see infrastructure administration. Legacy application pages under `/admin` redirect to their canonical product routes; `/admin/api` remains the API namespace until a separate compatibility migration is designed.
+Administrators receive `/` as their landing page. Normal users are redirected to `/account` and do not see infrastructure administration. `/admin` contains administrator-only pages, while `/admin/api` is the control-plane API namespace.
 
 Each route must:
 
@@ -250,7 +250,7 @@ Each source shows:
 - safe name and ID;
 - current health and last check time;
 - capabilities;
-- authentication mode and whether required configuration exists;
+- whether user credentials are supported and for which operations;
 - trusted token-service host policy without credential details;
 - routes using the source;
 - links to recent failures and source requests.

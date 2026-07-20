@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -39,7 +40,7 @@ func TestGatewayV2Ping(t *testing.T) {
 	}
 }
 
-func TestGatewayRequiresBasicAuthWhenAuthenticatorConfigured(t *testing.T) {
+func TestGatewayAdvertisesBearerAuthWhenAuthenticatorConfigured(t *testing.T) {
 	server := newTestServer(t, WithAuthenticator(staticAuthenticator{
 		username: "ci",
 		password: "secret",
@@ -53,21 +54,23 @@ func TestGatewayRequiresBasicAuthWhenAuthenticatorConfigured(t *testing.T) {
 	if got, want := response.Code, http.StatusUnauthorized; got != want {
 		t.Fatalf("status = %d, want %d", got, want)
 	}
-	if got := response.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Basic") {
-		t.Fatalf("WWW-Authenticate = %q, want Basic challenge", got)
+	if got := response.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Bearer") || !strings.Contains(got, "/auth/token") {
+		t.Fatalf("WWW-Authenticate = %q, want Bearer token challenge", got)
 	}
 }
 
-func TestGatewayOptionalAuthenticationPreservesAnonymousPrecedence(t *testing.T) {
-	server := newTestServer(t, WithAuthenticator(optionalStaticAuthenticator{staticAuthenticator{username: "alice", password: "token", identity: "user-1"}}))
+func TestGatewayAnonymousBearerTokenPreservesAnonymousPrecedence(t *testing.T) {
+	server := newTestServer(t, WithAuthenticator(staticAuthenticator{username: "alice", password: "token", identity: "user-1"}))
 	anonymous := httptest.NewRecorder()
-	server.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/v2/", nil))
+	request := httptest.NewRequest(http.MethodGet, "/v2/", nil)
+	request.Header.Set("Authorization", "Bearer anonymous")
+	server.ServeHTTP(anonymous, request)
 	if anonymous.Code != http.StatusOK {
 		t.Fatalf("anonymous ping status = %d body=%s", anonymous.Code, anonymous.Body.String())
 	}
 	invalid := httptest.NewRecorder()
 	invalidRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	invalidRequest.SetBasicAuth("alice", "wrong")
+	invalidRequest.Header.Set("Authorization", "Bearer wrong")
 	server.ServeHTTP(invalid, invalidRequest)
 	if invalid.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid presented credential status = %d", invalid.Code)
@@ -81,13 +84,13 @@ func TestGatewayAuthenticationRateLimitPreservesAnonymousRequestsAndRecovers(t *
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	server := newTestServer(t,
-		WithAuthenticator(optionalStaticAuthenticator{staticAuthenticator{username: "alice", password: "token", identity: "user-1"}}),
+		WithAuthenticator(staticAuthenticator{username: "alice", password: "token", identity: "user-1"}),
 		WithAuthenticationLimiter(security.NewFailureLimiter(2, time.Minute, 10*time.Minute, func() time.Time { return now })),
 	)
 	for range 2 {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-		request.SetBasicAuth("alice", "wrong")
+		request.Header.Set("Authorization", "Bearer wrong")
 		server.ServeHTTP(response, request)
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("failed auth status = %d", response.Code)
@@ -95,7 +98,7 @@ func TestGatewayAuthenticationRateLimitPreservesAnonymousRequestsAndRecovers(t *
 	}
 	blocked := httptest.NewRecorder()
 	blockedRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	blockedRequest.SetBasicAuth("alice", "token")
+	blockedRequest.Header.Set("Authorization", "Bearer access")
 	server.ServeHTTP(blocked, blockedRequest)
 	if blocked.Code != http.StatusTooManyRequests || blocked.Header().Get("Retry-After") == "" || strings.Contains(blocked.Body.String(), "alice") {
 		t.Fatalf("blocked auth = %d retry=%q body=%s", blocked.Code, blocked.Header().Get("Retry-After"), blocked.Body.String())
@@ -104,23 +107,21 @@ func TestGatewayAuthenticationRateLimitPreservesAnonymousRequestsAndRecovers(t *
 		t.Fatalf("rate-limit logs contain unsafe or missing diagnostics: %q", output)
 	}
 	anonymous := httptest.NewRecorder()
-	server.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/v2/", nil))
+	anonymousRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
+	anonymousRequest.Header.Set("Authorization", "Bearer anonymous")
+	server.ServeHTTP(anonymous, anonymousRequest)
 	if anonymous.Code != http.StatusOK {
 		t.Fatalf("anonymous request during credential block = %d", anonymous.Code)
 	}
 	now = now.Add(10 * time.Minute)
 	recovered := httptest.NewRecorder()
 	recoveredRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	recoveredRequest.SetBasicAuth("alice", "token")
+	recoveredRequest.Header.Set("Authorization", "Bearer access")
 	server.ServeHTTP(recovered, recoveredRequest)
 	if recovered.Code != http.StatusOK {
 		t.Fatalf("recovered auth = %d %s", recovered.Code, recovered.Body.String())
 	}
 }
-
-type optionalStaticAuthenticator struct{ staticAuthenticator }
-
-func (optionalStaticAuthenticator) AuthenticationRequired() bool { return false }
 
 func TestGatewayPassesAuthenticatedClientIdentityToPuller(t *testing.T) {
 	puller := &fakePuller{result: resolution.PullResult{Manifest: testGatewayManifest()}}
@@ -131,13 +132,13 @@ func TestGatewayPassesAuthenticatedClientIdentityToPuller(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/1.27", nil)
-	request.SetBasicAuth("ci", "secret")
+	request.Header.Set("Authorization", "Bearer access")
 	server.ServeHTTP(response, request)
 
 	if got, want := response.Code, http.StatusOK; got != want {
 		t.Fatalf("status = %d, want %d body %s", got, want, response.Body.String())
 	}
-	if got, want := puller.request.ClientIdentity, "ci-builder"; got != want {
+	if got, want := puller.request.Principal.EventIdentity(), "ci-builder"; got != want {
 		t.Fatalf("client identity = %q, want %q", got, want)
 	}
 }
@@ -151,13 +152,13 @@ func TestGatewayPassesAuthenticatedClientIdentityToPusher(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/v2/team-a/service/manifests/4.1", bytes.NewReader(testGatewayManifest().Content))
-	request.SetBasicAuth("ci", "secret")
+	request.Header.Set("Authorization", "Bearer access")
 	server.ServeHTTP(response, request)
 
 	if got, want := response.Code, http.StatusCreated; got != want {
 		t.Fatalf("status = %d, want %d body %s", got, want, response.Body.String())
 	}
-	if got, want := pusher.request.ClientIdentity, "ci-builder"; got != want {
+	if got, want := pusher.request.Principal.EventIdentity(), "ci-builder"; got != want {
 		t.Fatalf("client identity = %q, want %q", got, want)
 	}
 }
@@ -354,12 +355,24 @@ type staticAuthenticator struct {
 	identity string
 }
 
-func (a staticAuthenticator) AuthenticateBasic(username string, password string) (identity.Principal, bool) {
-	return identity.Principal{Kind: identity.KindConfiguredClient, ID: a.identity, Username: username}, username == a.username && password == a.password
+func (a staticAuthenticator) Issue(_ context.Context, username, password, _ string, _ []string) (string, time.Time, error) {
+	if username == "" && password == "" {
+		return "anonymous", time.Now().Add(time.Minute), nil
+	}
+	if username != a.username || password != a.password {
+		return "", time.Time{}, errors.New("invalid credentials")
+	}
+	return "access", time.Now().Add(time.Minute), nil
 }
 
-func (a staticAuthenticator) Enabled() bool {
-	return true
+func (a staticAuthenticator) Authenticate(_ context.Context, token, _, _ string) (identity.Principal, error) {
+	if token == "anonymous" {
+		return identity.Anonymous(), nil
+	}
+	if token != "access" {
+		return identity.Principal{}, errors.New("invalid token")
+	}
+	return identity.Principal{Kind: identity.KindLocalUser, ID: a.identity, Username: a.username}, nil
 }
 
 func newTestServer(t *testing.T, options ...Option) *Server {

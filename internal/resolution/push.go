@@ -20,11 +20,10 @@ var (
 )
 
 type PushRequest struct {
-	Repository     string
-	Reference      string
-	Manifest       registry.Manifest
-	ClientIdentity string
-	Principal      identity.Principal
+	Repository string
+	Reference  string
+	Manifest   registry.Manifest
+	Principal  identity.Principal
 }
 
 type PushResult struct {
@@ -71,17 +70,17 @@ func (r *PushResolver) Push(ctx context.Context, request PushRequest) (PushResul
 		_ = r.recordRejectedPush(ctx, started, request, err)
 		return PushResult{}, err
 	}
-	if !r.authorized(requestPrincipal(request.ClientIdentity, request.Principal), metadata.OperationPush, decision.RouteName) {
+	if !r.authorized(request.Principal, metadata.OperationPush, decision.RouteName) {
 		if err := r.recordUnauthorizedPush(ctx, started, request, decision); err != nil {
 			return PushResult{}, err
 		}
-		return PushResult{}, fmt.Errorf("%w: client %q cannot push route %q", ErrUnauthorized, request.ClientIdentity, decision.RouteName)
+		return PushResult{}, fmt.Errorf("%w: client %q cannot push route %q", ErrUnauthorized, request.Principal.EventIdentity(), decision.RouteName)
 	}
 
 	destination := r.connectors[decision.Destination]
 	credentialSource := "anonymous"
 	if r.provider != nil {
-		destination, credentialSource, err = r.provider.ConnectorFor(ctx, requestPrincipal(request.ClientIdentity, request.Principal), decision.Destination, metadata.OperationPush)
+		destination, credentialSource, err = r.provider.ConnectorFor(ctx, request.Principal, decision.Destination, metadata.OperationPush)
 		if err != nil {
 			errorClass := "credential_unavailable"
 			if errors.Is(err, registry.ErrCredentialRequired) {
@@ -204,7 +203,7 @@ func (r *PushResolver) recordSuccessfulPush(ctx context.Context, started time.Ti
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPush,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		CredentialSource:    result.CredentialSource,
 		LogicalReference:    logicalReference,
 		MatchedRoute:        result.Route,
@@ -221,7 +220,7 @@ func (r *PushResolver) recordRejectedPush(ctx context.Context, started time.Time
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPush,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		LogicalReference:    referenceString(request.Repository, request.Reference),
 		Status:              metadata.StatusDenied,
 		CacheResult:         metadata.CacheBypassed,
@@ -236,7 +235,7 @@ func (r *PushResolver) recordFailedPush(ctx context.Context, started time.Time, 
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPush,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		LogicalReference:    referenceString(decision.LogicalRepository, decision.Reference),
 		MatchedRoute:        decision.RouteName,
 		SourceOrDestination: decision.Destination,
@@ -253,7 +252,7 @@ func (r *PushResolver) recordUnauthorizedPush(ctx context.Context, started time.
 	return r.metadata.RecordRequestEvent(ctx, metadata.RequestEvent{
 		Timestamp:           now,
 		Operation:           metadata.OperationPush,
-		ClientIdentity:      request.ClientIdentity,
+		ClientIdentity:      request.Principal.EventIdentity(),
 		LogicalReference:    referenceString(decision.LogicalRepository, decision.Reference),
 		MatchedRoute:        decision.RouteName,
 		SourceOrDestination: decision.Destination,
@@ -261,6 +260,6 @@ func (r *PushResolver) recordUnauthorizedPush(ctx context.Context, started time.
 		CacheResult:         metadata.CacheBypassed,
 		Duration:            now.Sub(started),
 		ErrorClassification: "authorization_denied",
-		Explanation:         append(append([]string(nil), decision.Explanation...), fmt.Sprintf("client %q is not authorized for push route %q", request.ClientIdentity, decision.RouteName)),
+		Explanation:         append(append([]string(nil), decision.Explanation...), fmt.Sprintf("client %q is not authorized for push route %q", request.Principal.EventIdentity(), decision.RouteName)),
 	})
 }

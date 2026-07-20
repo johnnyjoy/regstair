@@ -48,7 +48,7 @@ func TestPullResolverUsesExternalFallbackAndCachesContent(t *testing.T) {
 		"external-registry": external,
 	})
 
-	result, err := resolver.Pull(context.Background(), PullRequest{Repository: "library/nginx", Reference: "1.27", ClientIdentity: "ci-builder"})
+	result, err := resolver.Pull(context.Background(), PullRequest{Repository: "library/nginx", Reference: "1.27", Principal: identity.Principal{Kind: identity.KindLocalUser, ID: "ci-builder"}})
 	if err != nil {
 		t.Fatalf("Pull() error = %v", err)
 	}
@@ -264,9 +264,9 @@ func TestPullResolverDeniesUnauthorizedRoute(t *testing.T) {
 	)
 
 	_, err := resolver.Pull(context.Background(), PullRequest{
-		Repository:     "library/nginx",
-		Reference:      "1.27",
-		ClientIdentity: "ci-builder",
+		Repository: "library/nginx",
+		Reference:  "1.27",
+		Principal:  identity.Principal{Kind: identity.KindLocalUser, ID: "ci-builder"},
 	})
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Pull() error = %v, want ErrUnauthorized", err)
@@ -310,7 +310,7 @@ func TestPullResolverDoesNotFallbackAfterCredentialSelectionFailure(t *testing.T
 	provider := &recordingConnectorProvider{connectors: map[string]registry.Connector{"public": registry.NewFakeConnector("public")}, failSource: "private"}
 	resolver := NewPullResolver(engine, newTestStore(t), metadata.NewMemoryRepository(), nil, WithConnectorProvider(provider))
 
-	_, err := resolver.Pull(context.Background(), PullRequest{Repository: "library/alpine", Reference: "edge", Principal: identity.Principal{Kind: identity.KindLocalUser, ID: "user-1"}, ClientIdentity: "user-1"})
+	_, err := resolver.Pull(context.Background(), PullRequest{Repository: "library/alpine", Reference: "edge", Principal: identity.Principal{Kind: identity.KindLocalUser, ID: "user-1"}})
 	if !errors.Is(err, registry.ErrCredentialRequired) {
 		t.Fatalf("Pull() error = %v, want credential required", err)
 	}

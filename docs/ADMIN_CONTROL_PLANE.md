@@ -60,7 +60,7 @@ Controls:
 - search by logical reference or digest;
 - open a request detail view with the full deterministic explanation;
 - distinguish client authentication, route authorization, upstream authentication, source availability, fallback blocking, and not-found outcomes;
-- show source auth mode, credential reference, configured status, health, and last successful contact;
+- show source credential capabilities, health, and last successful contact;
 - show route precedence, source order, authoritative source, fallback policy, and namespace rewrite;
 - search provenance, tag mappings, manifests, and blobs;
 - copy references and digests;
@@ -122,7 +122,7 @@ Candidate controls:
 - change precedence and fallback behavior;
 - edit namespace rewrites;
 - assign pull and push routes to clients;
-- add source metadata, endpoints, and auth modes;
+- add source metadata, endpoints, and credential capabilities;
 - change credential references without displaying secret values;
 - activate or roll back a complete revision.
 
@@ -216,7 +216,7 @@ It returns:
 - rewritten physical reference;
 - ordered pull candidates or push destination;
 - authoritative source and fallback behavior;
-- source auth mode and whether its credential is configured;
+- source credential capabilities and verification requirements;
 - deterministic explanation steps.
 
 Simulation is read-only. It must call the same policy and authorization code used by live requests so UI and runtime decisions cannot drift.
@@ -370,7 +370,7 @@ The slice does not add source tests, cache invalidation, config reload, client c
 - denied route authorization is filterable and inspectable;
 - invalid upstream credentials appear as `upstream_authentication_failed`;
 - pushed Harbor artifact is searchable and linked to provenance;
-- admin responses never contain configured client or upstream secret values.
+- admin responses never contain upstream secret values.
 
 ## Decision Log
 

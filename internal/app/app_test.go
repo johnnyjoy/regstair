@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,7 +36,7 @@ func TestNewLoadsConfigAndServesHealthAndGateway(t *testing.T) {
 	}{
 		{name: "health", path: "/healthz", want: http.StatusOK},
 		{name: "ready", path: "/readyz", want: http.StatusOK},
-		{name: "gateway ping", path: "/v2/", want: http.StatusOK},
+		{name: "gateway challenge", path: "/v2/", want: http.StatusUnauthorized},
 		{name: "pre-bootstrap application", path: "/", want: http.StatusSeeOther},
 		{name: "pre-bootstrap admin sources", path: "/admin/api/sources", want: http.StatusPreconditionRequired},
 	}
@@ -78,15 +79,13 @@ func TestNewCredentialEncryptionKeyConfiguration(t *testing.T) {
 	}
 }
 
-func TestNewRejectsCurrentUserSourceWithoutCredentialKey(t *testing.T) {
+func TestNewRejectsCredentialCapableSourceWithoutCredentialKey(t *testing.T) {
 	configPath := writeAppConfig(t, `
 version: 1
 sources:
   - id: harbor
     endpoint: https://harbor.example
     enabled: true
-    auth:
-      mode: current_user
     user_credentials:
       approved: true
       pull: true
@@ -202,51 +201,6 @@ func TestRestoredCredentialReadinessRequiresCorrectEncryptionKey(t *testing.T) {
 	}
 }
 
-func TestNewAppliesConfiguredClientAuthToGatewayOnly(t *testing.T) {
-	t.Setenv("REGSTAIR_CLIENT_CI_USERNAME", "ci")
-	t.Setenv("REGSTAIR_CLIENT_CI_PASSWORD", "secret")
-	configPath := writeAppConfig(t, `
-version: 1
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-sources: []
-routes: []
-`)
-
-	app, err := New(Options{
-		ConfigPath:  configPath,
-		ContentRoot: t.TempDir(),
-		ListenAddr:  "127.0.0.1:0",
-		StubSources: true,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	health := httptest.NewRecorder()
-	app.Handler().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if got, want := health.Code, http.StatusOK; got != want {
-		t.Fatalf("health status = %d, want %d", got, want)
-	}
-
-	unauthorized := httptest.NewRecorder()
-	app.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v2/", nil))
-	if got, want := unauthorized.Code, http.StatusUnauthorized; got != want {
-		t.Fatalf("unauthorized status = %d, want %d", got, want)
-	}
-
-	authorized := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	request.SetBasicAuth("ci", "secret")
-	app.Handler().ServeHTTP(authorized, request)
-	if got, want := authorized.Code, http.StatusOK; got != want {
-		t.Fatalf("authorized status = %d, want %d body %s", got, want, authorized.Body.String())
-	}
-}
-
 func TestNewLocalDockerTokenAuthenticationPreservesAnonymousGateway(t *testing.T) {
 	dir := t.TempDir()
 	database := filepath.Join(dir, "regstair.db")
@@ -276,25 +230,48 @@ func TestNewLocalDockerTokenAuthenticationPreservesAnonymousGateway(t *testing.T
 		t.Fatalf("post-bootstrap admin status = %d", protectedAdmin.Code)
 	}
 
+	anonymousToken := requestAccessToken(t, application.Handler(), "", "")
 	anonymous := httptest.NewRecorder()
-	application.Handler().ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/v2/", nil))
+	anonymousRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
+	anonymousRequest.Header.Set("Authorization", "Bearer "+anonymousToken)
+	application.Handler().ServeHTTP(anonymous, anonymousRequest)
 	if anonymous.Code != http.StatusOK {
 		t.Fatalf("anonymous gateway status = %d body=%s", anonymous.Code, anonymous.Body.String())
 	}
 	valid := httptest.NewRecorder()
 	validRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	validRequest.SetBasicAuth("admin", issued.Secret)
+	validRequest.Header.Set("Authorization", "Bearer "+requestAccessToken(t, application.Handler(), "admin", issued.Secret))
 	application.Handler().ServeHTTP(valid, validRequest)
 	if valid.Code != http.StatusOK {
 		t.Fatalf("valid local token status = %d body=%s", valid.Code, valid.Body.String())
 	}
 	invalid := httptest.NewRecorder()
 	invalidRequest := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	invalidRequest.SetBasicAuth("admin", "invalid-token")
+	invalidRequest.Header.Set("Authorization", "Bearer invalid-token")
 	application.Handler().ServeHTTP(invalid, invalidRequest)
 	if invalid.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid local token status = %d", invalid.Code)
 	}
+}
+
+func requestAccessToken(t *testing.T, handler http.Handler, username, password string) string {
+	t.Helper()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/token?service=regstair", nil)
+	if username != "" || password != "" {
+		request.SetBasicAuth(username, password)
+	}
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("token status = %d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Token == "" {
+		t.Fatalf("decode token response: %v body=%s", err, response.Body.String())
+	}
+	return body.Token
 }
 
 func TestDockerCLILoginWithLocalToken(t *testing.T) {

@@ -13,11 +13,9 @@ import (
 )
 
 type Config struct {
-	Version     int          `yaml:"version" json:"version"`
-	Clients     []Client     `yaml:"clients" json:"clients"`
-	Credentials []Credential `yaml:"credentials" json:"credentials"`
-	Sources     []Source     `yaml:"sources" json:"sources"`
-	Routes      []Route      `yaml:"routes" json:"routes"`
+	Version int      `yaml:"version" json:"version"`
+	Sources []Source `yaml:"sources" json:"sources"`
+	Routes  []Route  `yaml:"routes" json:"routes"`
 }
 
 type Source struct {
@@ -39,31 +37,9 @@ type UserCredentials struct {
 	AllowInsecure          bool   `yaml:"allow_insecure" json:"allow_insecure"`
 }
 
-type Credential struct {
-	ID          string `yaml:"id" json:"id"`
-	Type        string `yaml:"type" json:"type"`
-	UsernameEnv string `yaml:"username_env" json:"username_env"`
-	PasswordEnv string `yaml:"password_env" json:"password_env"`
-}
-
-type Client struct {
-	ID          string        `yaml:"id" json:"id"`
-	Type        string        `yaml:"type" json:"type"`
-	UsernameEnv string        `yaml:"username_env" json:"username_env"`
-	PasswordEnv string        `yaml:"password_env" json:"password_env"`
-	Allowed     ClientAllowed `yaml:"allowed" json:"allowed"`
-}
-
-type ClientAllowed struct {
-	Pull []string `yaml:"pull" json:"pull"`
-	Push []string `yaml:"push" json:"push"`
-}
-
 type Auth struct {
-	Mode          string   `yaml:"mode" json:"mode"`
-	CredentialRef string   `yaml:"credential_ref" json:"credential_ref"`
-	Strategy      string   `yaml:"strategy" json:"strategy"`
-	TokenHosts    []string `yaml:"token_hosts" json:"token_hosts,omitempty"`
+	Strategy   string   `yaml:"strategy" json:"strategy"`
+	TokenHosts []string `yaml:"token_hosts" json:"token_hosts,omitempty"`
 }
 
 type Route struct {
@@ -92,12 +68,6 @@ type Rewrite struct {
 }
 
 const (
-	CredentialTypeBasic = "basic"
-
-	AuthModeNone        = "none"
-	AuthModeProxy       = "proxy"
-	AuthModeCurrentUser = "current_user"
-
 	AuthStrategyChallenge = "challenge"
 	AuthStrategyRequired  = "required"
 )
@@ -168,63 +138,6 @@ func (c Config) validate() error {
 		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
 
-	routeNames := map[string]struct{}{}
-	for _, route := range c.Routes {
-		if route.Name != "" {
-			routeNames[route.Name] = struct{}{}
-		}
-	}
-
-	clientIDs := map[string]struct{}{}
-	for i, client := range c.Clients {
-		if client.ID == "" {
-			return fmt.Errorf("client %d has no id", i)
-		}
-		if _, exists := clientIDs[client.ID]; exists {
-			return fmt.Errorf("duplicate client id %q", client.ID)
-		}
-		clientIDs[client.ID] = struct{}{}
-		if client.Type != CredentialTypeBasic {
-			return fmt.Errorf("client %q has unsupported type %q", client.ID, client.Type)
-		}
-		if client.UsernameEnv == "" {
-			return fmt.Errorf("client %q has no username_env", client.ID)
-		}
-		if client.PasswordEnv == "" {
-			return fmt.Errorf("client %q has no password_env", client.ID)
-		}
-		for _, route := range client.Allowed.Pull {
-			if _, exists := routeNames[route]; !exists {
-				return fmt.Errorf("client %q pull authorization references unknown route %q", client.ID, route)
-			}
-		}
-		for _, route := range client.Allowed.Push {
-			if _, exists := routeNames[route]; !exists {
-				return fmt.Errorf("client %q push authorization references unknown route %q", client.ID, route)
-			}
-		}
-	}
-
-	credentialIDs := map[string]struct{}{}
-	for i, credential := range c.Credentials {
-		if credential.ID == "" {
-			return fmt.Errorf("credential %d has no id", i)
-		}
-		if _, exists := credentialIDs[credential.ID]; exists {
-			return fmt.Errorf("duplicate credential id %q", credential.ID)
-		}
-		credentialIDs[credential.ID] = struct{}{}
-		if credential.Type != CredentialTypeBasic {
-			return fmt.Errorf("credential %q has unsupported type %q", credential.ID, credential.Type)
-		}
-		if credential.UsernameEnv == "" {
-			return fmt.Errorf("credential %q has no username_env", credential.ID)
-		}
-		if credential.PasswordEnv == "" {
-			return fmt.Errorf("credential %q has no password_env", credential.ID)
-		}
-	}
-
 	sourceIDs := map[string]struct{}{}
 	sourcesByID := map[string]Source{}
 	for i, source := range c.Sources {
@@ -243,7 +156,7 @@ func (c Config) validate() error {
 		if err != nil {
 			return err
 		}
-		if err := validateSourceAuth(source, credentialIDs); err != nil {
+		if err := validateSourceAuth(source); err != nil {
 			return err
 		}
 		if err := validateUserCredentials(source, endpoint); err != nil {
@@ -253,11 +166,11 @@ func (c Config) validate() error {
 	for _, route := range c.Routes {
 		for _, sourceID := range route.Pull.Sources {
 			source, ok := sourcesByID[sourceID]
-			if ok && source.Auth.Mode == AuthModeCurrentUser && !source.UserCredentials.Pull {
+			if ok && source.UserCredentials.Approved && !source.UserCredentials.Pull {
 				return fmt.Errorf("route %q pulls from current-user source %q that does not allow user pull credentials", route.Name, sourceID)
 			}
 		}
-		if source, ok := sourcesByID[route.Push.Destination]; ok && source.Auth.Mode == AuthModeCurrentUser && !route.Push.Deny && !source.UserCredentials.Push {
+		if source, ok := sourcesByID[route.Push.Destination]; ok && source.UserCredentials.Approved && !route.Push.Deny && !source.UserCredentials.Push {
 			return fmt.Errorf("route %q pushes to current-user source %q that does not allow user push credentials", route.Name, source.ID)
 		}
 	}
@@ -300,12 +213,7 @@ func validateUserCredentials(source Source, endpoint *url.URL) error {
 	return nil
 }
 
-func validateSourceAuth(source Source, credentialIDs map[string]struct{}) error {
-	mode := source.Auth.Mode
-	if mode == "" {
-		mode = AuthModeNone
-	}
-
+func validateSourceAuth(source Source) error {
 	strategy := source.Auth.Strategy
 	if strategy == "" {
 		strategy = AuthStrategyChallenge
@@ -325,31 +233,8 @@ func validateSourceAuth(source Source, credentialIDs map[string]struct{}) error 
 		seenTokenHosts[key] = struct{}{}
 	}
 
-	switch mode {
-	case AuthModeNone:
-		if source.Auth.CredentialRef != "" || source.Auth.Strategy != "" || len(source.Auth.TokenHosts) > 0 {
-			return fmt.Errorf("source %q anonymous auth cannot configure credentials or a strategy", source.ID)
-		}
-		return nil
-	case AuthModeProxy:
-		if source.Auth.CredentialRef == "" {
-			return fmt.Errorf("source %q proxy auth has no credential_ref", source.ID)
-		}
-		if _, exists := credentialIDs[source.Auth.CredentialRef]; !exists {
-			return fmt.Errorf("source %q references unknown credential %q", source.ID, source.Auth.CredentialRef)
-		}
-		return nil
-	case AuthModeCurrentUser:
-		if source.Auth.CredentialRef != "" {
-			return fmt.Errorf("source %q current-user auth cannot configure credential_ref", source.ID)
-		}
-		if !source.UserCredentials.Approved {
-			return fmt.Errorf("source %q current-user auth requires approved user credentials", source.ID)
-		}
-		return nil
-	case "client_passthrough", "identity_mapped":
-		return fmt.Errorf("source %q auth mode %q is not implemented yet", source.ID, mode)
-	default:
-		return fmt.Errorf("source %q has unsupported auth mode %q", source.ID, mode)
+	if (source.Auth.Strategy != "" || len(source.Auth.TokenHosts) > 0) && !source.UserCredentials.Approved {
+		return fmt.Errorf("source %q authentication compatibility settings require approved user credentials", source.ID)
 	}
+	return nil
 }

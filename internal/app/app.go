@@ -89,6 +89,10 @@ func New(options Options) (*App, error) {
 	sessionService := auth.NewWebSessionService(metadataRepo, nil, nil, 30*time.Minute, 12*time.Hour)
 	adminAccountService := auth.NewAdminAccountService(metadataRepo, passwordHasher)
 	dockerTokenService := auth.NewDockerTokenService(metadataRepo, nil, nil)
+	ociTokenService, err := auth.NewOCITokenService(dockerTokenService, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("initialize OCI token service: %w", err)
+	}
 	loginLimiter := security.NewFailureLimiter(5, 5*time.Minute, 15*time.Minute, nil)
 	dockerLimiter := security.NewFailureLimiter(5, 5*time.Minute, 15*time.Minute, nil)
 	var registryCredentialService *auth.RegistryCredentialService
@@ -105,7 +109,7 @@ func New(options Options) (*App, error) {
 		credentialKeyring = keyring
 	} else {
 		for _, source := range fileConfig.Sources {
-			if source.Enabled && source.Auth.Mode == config.AuthModeCurrentUser {
+			if source.Enabled && source.UserCredentials.Approved {
 				return nil, fmt.Errorf("source %q uses current-user authentication but no credential encryption key is configured", source.ID)
 			}
 		}
@@ -116,10 +120,7 @@ func New(options Options) (*App, error) {
 		return nil, err
 	}
 
-	resolverOptions := []resolution.ResolverOption{}
-	if len(fileConfig.Clients) > 0 {
-		resolverOptions = append(resolverOptions, resolution.WithAuthorizer(auth.NewRouteAuthorizer(*fileConfig)))
-	}
+	resolverOptions := []resolution.ResolverOption{resolution.WithAuthorizer(auth.RouteAuthorizer{})}
 	if credentialKeyring != nil {
 		selector := auth.NewRuntimeCredentialSelector(metadataRepo, credentialKeyring, fileConfig.Sources, connectors, nil)
 		resolverOptions = append(resolverOptions, resolution.WithConnectorProvider(selector))
@@ -131,11 +132,7 @@ func New(options Options) (*App, error) {
 		gateway.WithPuller(pullResolver),
 		gateway.WithPusher(pushResolver),
 	}
-	configuredAuthenticator, err := auth.LoadAuthenticator(*fileConfig, nil)
-	if err != nil {
-		return nil, err
-	}
-	gatewayOptions = append(gatewayOptions, gateway.WithAuthenticator(auth.NewGatewayAuthenticator(configuredAuthenticator, dockerTokenService)))
+	gatewayOptions = append(gatewayOptions, gateway.WithAuthenticator(auth.NewGatewayAuthenticator(ociTokenService)))
 	gatewayOptions = append(gatewayOptions, gateway.WithAuthenticationLimiter(dockerLimiter))
 	gatewayServer, err := gateway.NewServer(gatewayOptions...)
 	if err != nil {
@@ -153,6 +150,7 @@ func New(options Options) (*App, error) {
 	})
 	app := &App{listenAddr: options.ListenAddr, handler: security.RecoverHTTP(mux, nil), store: store, repo: metadataRepo, metadataPath: metadataPath(options), closeMetadata: metadataRepo.Close, credentialKeyring: credentialKeyring}
 	mux.Handle("/v2/", gatewayServer)
+	mux.HandleFunc("/auth/token", gatewayServer.ServeTokenHTTP)
 	mux.Handle("/admin/api/", adminServer)
 	mux.Handle("/admin/", adminServer)
 	mux.HandleFunc("/healthz", app.handleHealth)
@@ -243,14 +241,6 @@ func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func buildConnectors(cfg config.Config, options Options) (map[string]registry.Connector, error) {
 	connectors := map[string]registry.Connector{}
-	var credentialStore *auth.Store
-	if !options.StubSources {
-		var err error
-		credentialStore, err = auth.LoadStore(cfg, nil)
-		if err != nil {
-			return nil, err
-		}
-	}
 	for _, source := range cfg.Sources {
 		if !source.Enabled {
 			continue
@@ -266,16 +256,6 @@ func buildConnectors(cfg config.Config, options Options) (map[string]registry.Co
 		httpOptions := []registry.HTTPOption{}
 		if len(source.Auth.TokenHosts) > 0 {
 			httpOptions = append(httpOptions, registry.WithAllowedTokenHosts(source.Auth.TokenHosts...))
-		}
-		if source.Auth.Mode == config.AuthModeProxy {
-			credential, ok := credentialStore.Basic(source.Auth.CredentialRef)
-			if !ok {
-				return nil, fmt.Errorf("source %q proxy credential %q was not loaded", source.ID, source.Auth.CredentialRef)
-			}
-			httpOptions = append(httpOptions, registry.WithBasicAuth(credential.Username, credential.Password))
-			if source.Auth.Strategy == config.AuthStrategyRequired {
-				httpOptions = append(httpOptions, registry.WithPreemptiveBasicAuth())
-			}
 		}
 		connector, err := registry.NewHTTPConnector(source.ID, source.Endpoint, nil, httpOptions...)
 		if err != nil {

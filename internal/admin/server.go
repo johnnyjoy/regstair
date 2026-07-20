@@ -63,15 +63,8 @@ type SourceView struct {
 	Endpoint        string                 `json:"endpoint"`
 	Type            string                 `json:"type"`
 	Enabled         bool                   `json:"enabled"`
-	Auth            AuthView               `json:"auth"`
 	UserCredentials config.UserCredentials `json:"user_credentials"`
 	Routes          []string               `json:"routes"`
-}
-
-type AuthView struct {
-	Mode          string `json:"mode"`
-	CredentialRef string `json:"credential_ref,omitempty"`
-	Configured    bool   `json:"configured"`
 }
 
 type RoutesResponse struct {
@@ -171,7 +164,6 @@ type dashboardData struct {
 	HasFilters           bool
 	User                 *metadata.User
 	IsAdmin              bool
-	LegacyView           bool
 	CredentialRows       []credentialRow
 	CredentialsAvailable bool
 	Users                []metadata.User
@@ -267,10 +259,6 @@ func NewServer(cfg Config) *Server {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
-	if target, ok := legacyPageRedirect(r.URL.Path); ok {
-		http.Redirect(w, r, target, http.StatusPermanentRedirect)
-		return
-	}
 	setupRequired := s.auth != nil && s.bootstrapRequired(r.Context())
 	if setupRequired {
 		w.Header().Set("X-Regstair-Bootstrap-Required", "true")
@@ -400,22 +388,6 @@ func isApplicationPagePath(path string) bool {
 	default:
 		return false
 	}
-}
-
-func legacyPageRedirect(path string) (string, bool) {
-	redirects := map[string]string{
-		"/admin":          "/",
-		"/admin/":         "/",
-		"/admin/requests": "/requests",
-		"/admin/routes":   "/routes",
-		"/admin/sources":  "/sources",
-		"/admin/cache":    "/cache",
-		"/admin/account":  "/account",
-		"/admin/login":    "/login",
-		"/admin/setup":    "/setup",
-	}
-	target, ok := redirects[path]
-	return target, ok
 }
 
 func (s *Server) handleFirstRun(w http.ResponseWriter, r *http.Request) bool {
@@ -1065,7 +1037,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		GeneratedAtUTC:       time.Now().UTC().Format(time.RFC3339),
 		User:                 user,
 		IsAdmin:              true,
-		LegacyView:           user == nil,
 		CredentialsAvailable: s.auth != nil && s.auth.Credentials != nil,
 	}
 
@@ -1234,7 +1205,7 @@ func adminPage(path string) (page, title, subtitle string) {
 	case "/routes":
 		return "routes", "Routes", "Policy precedence, destinations, fallback, and rewriting"
 	case "/sources":
-		return "sources", "Sources", "Configured registries, capabilities, and authentication mode"
+		return "sources", "Sources", "Configured registries and credential capabilities"
 	case "/cache":
 		return "cache", "Cache", "Cached artifacts, digests, and provenance"
 	case "/admin/users":
@@ -1563,32 +1534,14 @@ func setSecurityHeaders(w http.ResponseWriter) {
 }
 
 func sourceViews(cfg config.Config) []SourceView {
-	credentialIDs := map[string]struct{}{}
-	for _, credential := range cfg.Credentials {
-		credentialIDs[credential.ID] = struct{}{}
-	}
-
 	views := make([]SourceView, 0, len(cfg.Sources))
 	for _, source := range cfg.Sources {
-		mode := source.Auth.Mode
-		if mode == "" {
-			mode = config.AuthModeNone
-		}
-		configured := mode == config.AuthModeNone
-		if mode == config.AuthModeProxy {
-			_, configured = credentialIDs[source.Auth.CredentialRef]
-		}
 		view := SourceView{
-			ID:       source.ID,
-			Name:     source.Name,
-			Endpoint: source.Endpoint,
-			Type:     source.Type,
-			Enabled:  source.Enabled,
-			Auth: AuthView{
-				Mode:          mode,
-				CredentialRef: source.Auth.CredentialRef,
-				Configured:    configured,
-			},
+			ID:              source.ID,
+			Name:            source.Name,
+			Endpoint:        source.Endpoint,
+			Type:            source.Type,
+			Enabled:         source.Enabled,
 			UserCredentials: source.UserCredentials,
 			Routes:          sourceRouteNames(cfg, source.ID),
 		}
@@ -1721,7 +1674,7 @@ func parseRequestEventQuery(r *http.Request, defaultLimit int) (metadata.Request
 			return metadata.RequestEventQuery{}, fmt.Errorf("invalid cache result")
 		}
 	}
-	if raw := values.Get("credential"); raw != "" && raw != "anonymous" && raw != "current_user" && raw != "proxy" {
+	if raw := values.Get("credential"); raw != "" && raw != "anonymous" && raw != "current_user" {
 		return metadata.RequestEventQuery{}, fmt.Errorf("invalid credential source")
 	}
 	if raw := values.Get("window"); raw != "" {

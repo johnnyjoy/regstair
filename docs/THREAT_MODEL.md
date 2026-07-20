@@ -83,7 +83,6 @@ Regstair authenticates/authorizes the local user, matches the global route, choo
 | Malicious Bearer realm and upload redirect cannot receive credentials | Registry HTTP hostile realm/location tests |
 | Secret-free database, API, audit, logs, panic, and upstream errors | `docs/SECRET_LEAK_QUALIFICATION.md` and executable canary tests |
 | Missing/wrong keys, rotation, backup, and restore | `docs/BACKUP_KEY_LIFECYCLE.md` and CLI/readiness tests |
-| YAML-client overlap and local-token cutover | `scripts/upgrade-smoke.sh` |
 
 ## Explicit Non-Guarantees
 

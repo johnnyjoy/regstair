@@ -156,12 +156,33 @@ func (s *DockerTokenService) Issue(ctx context.Context, userID, label string, li
 }
 
 func (s *DockerTokenService) Authenticate(ctx context.Context, username, secret string) (*metadata.User, error) {
+	user, _, err := s.AuthenticateWithToken(ctx, username, secret)
+	return user, err
+}
+
+func (s *DockerTokenService) AuthenticateWithToken(ctx context.Context, username, secret string) (*metadata.User, *metadata.DockerToken, error) {
 	user, err := s.repo.FindUserByUsername(ctx, username)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	hash := sha256.Sum256([]byte(secret))
 	token, err := s.repo.FindDockerTokenByHash(ctx, hash[:])
+	if err != nil {
+		return nil, nil, err
+	}
+	now := s.now()
+	if user == nil || !user.Enabled || token == nil || token.UserID != user.ID || !token.RevokedAt.IsZero() || !now.Before(token.ExpiresAt) {
+		return nil, nil, ErrInvalidCredentials
+	}
+	return user, token, nil
+}
+
+func (s *DockerTokenService) ValidateHash(ctx context.Context, userID string, hash []byte) (*metadata.User, error) {
+	token, err := s.repo.FindDockerTokenByHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.repo.FindUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

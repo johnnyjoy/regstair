@@ -44,17 +44,13 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 	if !ok || !source.Enabled {
 		return nil, "", fmt.Errorf("%w: source %s", registry.ErrUnavailable, sourceID)
 	}
-	mode := source.Auth.Mode
-	if mode == "" || mode == config.AuthModeNone {
+	if !source.UserCredentials.Approved {
 		return s.connectors[sourceID], "anonymous", nil
 	}
-	if mode == config.AuthModeProxy {
-		return s.connectors[sourceID], "proxy", nil
-	}
-	if mode != config.AuthModeCurrentUser {
-		return nil, "", fmt.Errorf("%w: unsupported credential mode", registry.ErrCredentialUnavailable)
-	}
 	if principal.Kind != identity.KindLocalUser || principal.ID == "" {
+		if operation == metadata.OperationPull {
+			return s.connectors[sourceID], "anonymous", nil
+		}
 		return nil, "", fmt.Errorf("%w: local user authentication is required", registry.ErrCredentialRequired)
 	}
 	if (operation == metadata.OperationPull && !source.UserCredentials.Pull) || (operation == metadata.OperationPush && !source.UserCredentials.Push) {
@@ -72,6 +68,9 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 		return nil, "", err
 	}
 	if credential == nil {
+		if operation == metadata.OperationPull {
+			return s.connectors[sourceID], "anonymous", nil
+		}
 		return nil, "", fmt.Errorf("%w: no credential for source %s", registry.ErrCredentialRequired, sourceID)
 	}
 	secret, err := s.keyring.Decrypt(credential.ID, principal.ID, sourceID, credential.EncryptedSecret)
@@ -88,7 +87,10 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 
 func (s *RuntimeCredentialSelector) AuthorizeCache(ctx context.Context, principal identity.Principal, sourceID string, operation metadata.Operation) (string, error) {
 	source, ok := s.sources[sourceID]
-	if !ok || source.Auth.Mode != config.AuthModeCurrentUser {
+	if !ok || !source.UserCredentials.Approved {
+		return "anonymous", nil
+	}
+	if operation == metadata.OperationPull {
 		return "anonymous", nil
 	}
 	if principal.Kind != identity.KindLocalUser || principal.ID == "" {

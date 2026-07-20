@@ -9,7 +9,7 @@ A complete Regstair recovery set has separate parts with different access contro
 
 1. **Regstair backup archive:** the entire content root, including SQLite metadata, SQLite WAL/sidecar files if present, OCI blobs, and cached content metadata; plus the authoritative YAML configuration and a versioned backup manifest.
 2. **Credential encryption keys:** every key file still referenced by a stored credential envelope. Keys are intentionally never included in the Regstair archive.
-3. **Deployment secret values:** shared proxy credentials, legacy client credentials, TLS private keys, and other values referenced by environment/file configuration. The YAML archive contains references, not these external values.
+3. **Deployment secret values:** credential-encryption keys, TLS private keys, and other operator-managed secrets. The YAML archive does not contain these values.
 4. **Deployment definition:** Compose overrides, reverse-proxy/TLS configuration, bind address, and key-ID/file mounts.
 
 Losing any content-root data can lose cached content, users, tokens, sessions, audit history, routes' runtime metadata, and stored upstream credentials. Losing the authoritative YAML can change routing and registry identity even if SQLite survives.

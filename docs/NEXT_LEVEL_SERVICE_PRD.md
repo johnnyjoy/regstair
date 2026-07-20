@@ -68,7 +68,7 @@ The existing product already supports:
 - cached pulls during upstream outage;
 - deterministic push routing;
 - SQLite persistence;
-- client Basic authentication;
+- Docker-compatible scoped Bearer authentication;
 - route authorization;
 - proxy-owned upstream credentials;
 - upstream bearer-challenge handling;
@@ -221,6 +221,8 @@ As established by ADR-0001, `docker login` uses:
 
 The local web password is not accepted as a Docker credential.
 
+Regstair presents a standard OCI Bearer challenge. Its token endpoint accepts the local username and Docker access token supplied by `docker login`, then issues a short-lived repository-scoped Bearer token. Anonymous clients receive pull-scoped tokens where route policy permits public pulls. Bearer-token validation rechecks the originating Docker token and current user state on every request.
+
 Requirements:
 
 - every token has an explicit expiration time;
@@ -231,7 +233,7 @@ Requirements:
 - token authority cannot exceed the user's current route authorization;
 - anonymous public pulls continue to work where route policy permits them.
 
-This phase does not introduce a broader OAuth, OIDC, refresh-token, or token-exchange platform.
+This scoped OCI token service is not a broader OAuth, OIDC, refresh-token, or application API-token platform.
 
 ---
 
@@ -394,7 +396,6 @@ For each upstream operation, the configured registry and route determine the cre
 
 ```text
 anonymous
-shared Regstair credential
 current user's saved credential
 ```
 
@@ -413,9 +414,6 @@ Private pull using user credentials
 
 Push using user credentials
     -> current user's verified credential
-
-Route using a shared registry credential
-    -> administrator-configured shared credential
 ```
 
 A missing or rejected credential must produce a clear authentication or authorization failure. It must not be treated as repository absence.
@@ -743,7 +741,6 @@ The precise routes may be adjusted to match current Regstair conventions.
 - push with user credential;
 - missing credential;
 - insufficient push permission;
-- shared credential route;
 - upstream outage;
 - Harbor verification.
 

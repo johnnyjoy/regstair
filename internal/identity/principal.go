@@ -3,9 +3,8 @@ package identity
 type Kind string
 
 const (
-	KindAnonymous        Kind = "anonymous"
-	KindConfiguredClient Kind = "configured_client"
-	KindLocalUser        Kind = "local_user"
+	KindAnonymous Kind = "anonymous"
+	KindLocalUser Kind = "local_user"
 )
 
 type Principal struct {

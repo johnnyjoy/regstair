@@ -32,8 +32,12 @@ registry_upload_blob() {
   local body="$4"
 
   local headers location upload_url patch_location
+  local auth_args=()
+  if [[ "$base_url" == "$regstair_url" && -n "${regstair_client_password:-}" ]]; then
+    auth_args=(-H "Authorization: Bearer $(regstair_access_token "$repository" "push")")
+  fi
   headers="$(mktemp)"
-  curl -fsS -D "$headers" -o /dev/null -X POST "$base_url/v2/$repository/blobs/uploads/"
+  curl -fsS "${auth_args[@]}" -D "$headers" -o /dev/null -X POST "$base_url/v2/$repository/blobs/uploads/"
   location="$(awk 'tolower($1) == "location:" {print $2}' "$headers" | tr -d '\r' | tail -n 1)"
   rm -f "$headers"
 
@@ -52,7 +56,7 @@ registry_upload_blob() {
 
   headers="$(mktemp)"
   printf '%s' "$body" |
-    curl -fsS -D "$headers" -o /dev/null \
+    curl -fsS "${auth_args[@]}" -D "$headers" -o /dev/null \
       -X PATCH \
       -H "Content-Type: application/octet-stream" \
       --data-binary @- \
@@ -76,7 +80,7 @@ registry_upload_blob() {
     upload_url="$upload_url?digest=$digest"
   fi
 
-  curl -fsS -o /dev/null -X PUT "$upload_url"
+  curl -fsS "${auth_args[@]}" -o /dev/null -X PUT "$upload_url"
 }
 
 registry_put_manifest() {
@@ -85,8 +89,12 @@ registry_put_manifest() {
   local reference="$3"
   local manifest="$4"
 
+  local auth_args=()
+  if [[ "$base_url" == "$regstair_url" && -n "${regstair_client_password:-}" ]]; then
+    auth_args=(-H "Authorization: Bearer $(regstair_access_token "$repository" "push")")
+  fi
   printf '%s' "$manifest" |
-    curl -fsS -o /dev/null \
+    curl -fsS "${auth_args[@]}" -o /dev/null \
       -X PUT \
       -H "Content-Type: application/vnd.oci.image.manifest.v1+json" \
       --data-binary @- \
@@ -112,12 +120,33 @@ wait_http() {
   exit 1
 }
 
+regstair_access_token() {
+  local repository="${1:-}"
+  local actions="${2:-}"
+  local query="service=regstair"
+  local auth_args=()
+  if [[ -n "$repository" ]]; then
+    query="$query&scope=repository:$repository:$actions"
+  fi
+  if [[ -n "${regstair_client_password:-}" ]]; then
+    auth_args=(-u "$regstair_client_username:$regstair_client_password")
+  fi
+  curl -fsS "${auth_args[@]}" "$regstair_url/auth/token?$query" | jq -er '.token'
+}
+
 assert_http_status() {
   local expected="$1"
   local url="$2"
   local status
 
-  status="$(curl -sS -o /dev/null -w '%{http_code}' -H "$manifest_accept" "$url")"
+  local auth_args=()
+  if [[ "$url" == "$regstair_url/v2/"* ]]; then
+    local repository="${url#"$regstair_url/v2/"}"
+    repository="${repository%%/manifests/*}"
+    repository="${repository%%/blobs/*}"
+    auth_args=(-H "Authorization: Bearer $(regstair_access_token "$repository" "pull")")
+  fi
+  status="$(curl -sS -o /dev/null -w '%{http_code}' "${auth_args[@]}" -H "$manifest_accept" "$url")"
   if [[ "$status" != "$expected" ]]; then
     echo "unexpected status for $url: got $status, want $expected" >&2
     exit 1
@@ -140,8 +169,17 @@ wait_http "$internal_url/v2/" "internal registry"
 wait_http "$external_url/v2/" "external registry"
 wait_http "$destination_url/v2/" "destination registry"
 wait_http "$regstair_url/healthz" "regstair"
-wait_http "$regstair_url/v2/" "regstair OCI endpoint"
-wait_http "$regstair_url/admin/" "regstair admin UI"
+for _ in $(seq 1 60); do
+  if ping_token="$(regstair_access_token)" && curl -fsS -H "Authorization: Bearer $ping_token" "$regstair_url/v2/" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+if [[ -z "${ping_token:-}" ]]; then
+  echo "timed out waiting for regstair OCI endpoint" >&2
+  exit 1
+fi
+wait_http "$regstair_url/" "regstair UI"
 
 config_body='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}'
 layer_body='hello regstair'
@@ -206,6 +244,12 @@ echo "Restarting external registry for cleanup-friendly final state..."
 docker compose -p "$project" up -d external-registry >/dev/null
 wait_http "$external_url/v2/" "external registry"
 
+echo "Creating the local administrator and Docker token for the push phase..."
+regstair_client_username="smoke-admin"
+bootstrap_admin_session "$regstair_url" "$regstair_client_username" "smoke administrator password"
+regstair_client_password="$(admin_post "$regstair_url" "/admin/api/account/docker-tokens" \
+  '{"label":"compose-smoke","expires_in_days":1}' | jq -er '.secret')"
+
 push_config_body='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{"name":"team-a"}}'
 push_layer_body='pushed through regstair'
 push_config_digest="$(sha256_digest "$push_config_body")"
@@ -254,7 +298,6 @@ if [[ "$destination_digest" != "$push_manifest_digest" ]]; then
 fi
 
 echo "Verifying admin API exposes routes, requests, artifacts, and provenance..."
-bootstrap_admin_session "$regstair_url"
 admin_body="$(admin_get "$regstair_url" "/")"
 if ! grep -q 'aria-label="System health"' <<<"$admin_body"; then
   echo "authenticated overview did not render the system health region" >&2

@@ -63,7 +63,7 @@ Deferred to a future versioned configuration-revision system. Direct field mutat
 - [ ] Per-user credential operations reject unknown or unapproved source IDs.
 - [ ] Restart reproduces the same approved registry projection from YAML.
 - [ ] No registry CRUD table or mutating endpoint is introduced in this phase.
-- [ ] Existing anonymous, proxy-auth, Harbor, and Docker smoke paths remain compatible.
+- [ ] Anonymous pull, per-user Harbor credential, and Docker smoke paths remain valid.
 
 ## Non-Goals
 
@@ -72,4 +72,3 @@ Deferred to a future versioned configuration-revision system. Direct field mutat
 - Runtime connector hot swapping.
 - Per-user registry hosts.
 - Configuration revisions or activation workflows.
-

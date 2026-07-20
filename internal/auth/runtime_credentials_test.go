@@ -35,7 +35,7 @@ func TestRuntimeCredentialSelectorUsesExactLocalUserCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := config.Source{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, Auth: config.Auth{Mode: config.AuthModeCurrentUser}, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true}}
+	source := config.Source{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true}}
 	selector := NewRuntimeCredentialSelector(repo, keyring, []config.Source{source}, nil, nil)
 	var gotUsername, gotPassword string
 	selector.factory = func(_ config.Source, username, password string) (registry.Connector, error) {
@@ -59,10 +59,27 @@ func TestRuntimeCredentialSelectorUsesExactLocalUserCredential(t *testing.T) {
 
 func TestRuntimeCredentialSelectorDoesNotInspectCredentialsForAnonymousSource(t *testing.T) {
 	base := registry.NewFakeConnector("public")
-	source := config.Source{ID: "public", Endpoint: "https://public.example", Enabled: true, Auth: config.Auth{Mode: config.AuthModeNone}}
+	source := config.Source{ID: "public", Endpoint: "https://public.example", Enabled: true}
 	selector := NewRuntimeCredentialSelector(nil, nil, []config.Source{source}, map[string]registry.Connector{"public": base}, nil)
 	got, credentialSource, err := selector.ConnectorFor(context.Background(), identity.Anonymous(), "public", metadata.OperationPull)
 	if err != nil || got != base || credentialSource != "anonymous" {
 		t.Fatalf("ConnectorFor(public) = %#v, %q, %v", got, credentialSource, err)
+	}
+}
+
+func TestRuntimeCredentialSelectorKeepsPublicPullAnonymousWithoutCredential(t *testing.T) {
+	repo := openAuthRepository(t)
+	if _, err := repo.CreateUser(context.Background(), metadata.User{ID: "user-1", Username: "alice", PasswordHash: "hash", Access: metadata.UserAccessUser, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	base := registry.NewFakeConnector("docker-hub")
+	source := config.Source{ID: "docker-hub", Endpoint: "https://registry-1.docker.io", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true}}
+	selector := NewRuntimeCredentialSelector(repo, nil, []config.Source{source}, map[string]registry.Connector{"docker-hub": base}, nil)
+
+	for _, principal := range []identity.Principal{identity.Anonymous(), {Kind: identity.KindLocalUser, ID: "user-1"}} {
+		connector, credentialSource, err := selector.ConnectorFor(context.Background(), principal, "docker-hub", metadata.OperationPull)
+		if err != nil || connector != base || credentialSource != "anonymous" {
+			t.Fatalf("ConnectorFor(%#v) = %#v, %q, %v", principal, connector, credentialSource, err)
+		}
 	}
 }

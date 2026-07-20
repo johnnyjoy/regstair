@@ -41,51 +41,6 @@ func TestServerListsSourcesAndRoutes(t *testing.T) {
 	}
 }
 
-func TestServerRedactsSourceAuthDetails(t *testing.T) {
-	cfg := testConfig()
-	cfg.Credentials = []config.Credential{
-		{
-			ID:          "docker-hub-basic",
-			Type:        config.CredentialTypeBasic,
-			UsernameEnv: "REGSTAIR_DOCKER_HUB_USERNAME",
-			PasswordEnv: "REGSTAIR_DOCKER_HUB_PASSWORD",
-		},
-	}
-	cfg.Sources[1].Auth = config.Auth{
-		Mode:          config.AuthModeProxy,
-		CredentialRef: "docker-hub-basic",
-	}
-
-	server := NewServer(Config{Config: cfg, Repo: metadata.NewMemoryRepository()})
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/admin/api/sources", nil)
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body %s", response.Code, http.StatusOK, response.Body.String())
-	}
-	body := response.Body.String()
-	for _, unwanted := range []string{"REGSTAIR_DOCKER_HUB_USERNAME", "REGSTAIR_DOCKER_HUB_PASSWORD", "secret"} {
-		if strings.Contains(body, unwanted) {
-			t.Fatalf("sources response leaked %q: %s", unwanted, body)
-		}
-	}
-
-	var sources SourcesResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &sources); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-	if got, want := sources.Sources[1].Auth.Mode, config.AuthModeProxy; got != want {
-		t.Fatalf("auth mode = %q, want %q", got, want)
-	}
-	if got, want := sources.Sources[1].Auth.CredentialRef, "docker-hub-basic"; got != want {
-		t.Fatalf("credential ref = %q, want %q", got, want)
-	}
-	if !sources.Sources[1].Auth.Configured {
-		t.Fatal("auth configured = false, want true")
-	}
-}
-
 func TestServerListsRecentRequests(t *testing.T) {
 	repo := metadata.NewMemoryRepository()
 	if err := repo.RecordRequestEvent(testContext(t), metadata.RequestEvent{
@@ -395,25 +350,6 @@ func TestDashboardShowsTimeScopedHealthAttentionAndActivity(t *testing.T) {
 	}
 }
 
-func TestLegacyApplicationPagesRedirectToCanonicalRoutes(t *testing.T) {
-	server := NewServer(Config{Config: testConfig(), Repo: metadata.NewMemoryRepository()})
-	redirects := map[string]string{
-		"/admin/":         "/",
-		"/admin/requests": "/requests",
-		"/admin/routes":   "/routes",
-		"/admin/sources":  "/sources",
-		"/admin/cache":    "/cache",
-		"/admin/account":  "/account",
-	}
-	for from, to := range redirects {
-		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, from, nil))
-		if response.Code != http.StatusPermanentRedirect || response.Header().Get("Location") != to {
-			t.Errorf("%s = %d Location %q, want %d %q", from, response.Code, response.Header().Get("Location"), http.StatusPermanentRedirect, to)
-		}
-	}
-}
-
 func TestDashboardFiltersAndPaginatesRequests(t *testing.T) {
 	repo := metadata.NewMemoryRepository()
 	base := time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC)
@@ -635,33 +571,6 @@ func TestServerSetsAdminSecurityHeaders(t *testing.T) {
 	}
 	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "script-src 'self'") {
 		t.Fatalf("Content-Security-Policy = %q, want self-hosted scripts allowed", got)
-	}
-}
-
-func TestDashboardDoesNotExposeCredentialEnvironmentNames(t *testing.T) {
-	cfg := testConfig()
-	cfg.Credentials = []config.Credential{{
-		ID:          "harbor-robot",
-		Type:        config.CredentialTypeBasic,
-		UsernameEnv: "REGSTAIR_HARBOR_USERNAME",
-		PasswordEnv: "REGSTAIR_HARBOR_PASSWORD",
-	}}
-	cfg.Sources[0].Auth = config.Auth{Mode: config.AuthModeProxy, CredentialRef: "harbor-robot"}
-	server := NewServer(Config{Config: cfg, Repo: metadata.NewMemoryRepository()})
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/sources", nil)
-	server.ServeHTTP(response, request)
-
-	body := response.Body.String()
-	for _, forbidden := range []string{"REGSTAIR_HARBOR_USERNAME", "REGSTAIR_HARBOR_PASSWORD"} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("dashboard leaked credential environment name %q", forbidden)
-		}
-	}
-	for _, want := range []string{"harbor-robot", "configured"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("dashboard missing redacted auth status %q", want)
-		}
 	}
 }
 

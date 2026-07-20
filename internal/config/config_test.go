@@ -166,60 +166,7 @@ routes: []
 	}
 }
 
-func TestPolicyConfigAcceptsProxyBasicAuthCredentialReference(t *testing.T) {
-	path := writeConfig(t, `
-version: 1
-credentials:
-  - id: docker-hub-basic
-    type: basic
-    username_env: REGSTAIR_DOCKER_HUB_USERNAME
-    password_env: REGSTAIR_DOCKER_HUB_PASSWORD
-sources:
-  - id: docker-hub
-    endpoint: https://registry-1.docker.io
-    auth:
-      mode: proxy
-      credential_ref: docker-hub-basic
-routes: []
-`)
-
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-
-	if _, err := cfg.PolicyConfig(); err != nil {
-		t.Fatalf("PolicyConfig() error = %v", err)
-	}
-	if got, want := cfg.Sources[0].Auth.Mode, "proxy"; got != want {
-		t.Fatalf("auth mode = %q, want %q", got, want)
-	}
-}
-
-func TestPolicyConfigRejectsProxyAuthWithoutKnownCredential(t *testing.T) {
-	path := writeConfig(t, `
-version: 1
-sources:
-  - id: docker-hub
-    endpoint: https://registry-1.docker.io
-    auth:
-      mode: proxy
-      credential_ref: missing
-routes: []
-`)
-
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-
-	_, err = cfg.PolicyConfig()
-	if err == nil {
-		t.Fatal("PolicyConfig() error = nil, want missing credential reference error")
-	}
-}
-
-func TestPolicyConfigRejectsDeferredAuthModes(t *testing.T) {
+func TestLoadRejectsAuthenticationModes(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
 sources:
@@ -230,18 +177,41 @@ sources:
 routes: []
 `)
 
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-
-	_, err = cfg.PolicyConfig()
-	if err == nil {
-		t.Fatal("PolicyConfig() error = nil, want unsupported auth mode error")
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("LoadFile() accepted an authentication mode")
 	}
 }
 
-func TestPolicyConfigAcceptsCurrentUserChallengeAuth(t *testing.T) {
+func TestLoadRejectsRemovedConfiguredClients(t *testing.T) {
+	path := writeConfig(t, "version: 1\nclients: []\nsources: []\nroutes: []\n")
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("LoadFile() accepted removed clients configuration")
+	}
+}
+
+func TestLoadRejectsRemovedSharedCredentials(t *testing.T) {
+	path := writeConfig(t, "version: 1\ncredentials: []\nsources: []\nroutes: []\n")
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("LoadFile() accepted removed credentials configuration")
+	}
+}
+
+func TestPolicyConfigRejectsRemovedProxyAuth(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+sources:
+  - id: harbor
+    endpoint: https://harbor.example
+    auth:
+      mode: proxy
+routes: []
+`)
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("LoadFile() accepted removed proxy auth")
+	}
+}
+
+func TestPolicyConfigAcceptsCredentialChallengeCompatibility(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
 sources:
@@ -249,7 +219,6 @@ sources:
     endpoint: https://harbor.example
     enabled: true
     auth:
-      mode: current_user
       strategy: challenge
     user_credentials:
       approved: true
@@ -275,7 +244,6 @@ sources:
     endpoint: https://registry.example
     enabled: true
     auth:
-      mode: current_user
       token_hosts:
         - auth.example
     user_credentials:
@@ -299,7 +267,6 @@ sources:
     endpoint: https://registry.example
     enabled: true
     auth:
-      mode: current_user
       token_hosts:
         - https://evil.example/token
     user_credentials:
@@ -314,100 +281,6 @@ routes: []
 	}
 	if _, err := cfg.PolicyConfig(); err == nil {
 		t.Fatal("PolicyConfig() accepted a token host containing a URL")
-	}
-}
-
-func TestPolicyConfigAcceptsBasicClients(t *testing.T) {
-	path := writeConfig(t, `
-version: 1
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-    allowed:
-      pull:
-        - curated-library
-      push:
-        - team-a-publish
-sources: []
-routes:
-  - name: curated-library
-    match: library/**
-    precedence: 10
-    pull:
-      sources:
-        - internal-curated
-  - name: team-a-publish
-    match: team-a/**
-    precedence: 20
-    push:
-      destination: harbor-team-a
-`)
-
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-
-	if _, err := cfg.PolicyConfig(); err != nil {
-		t.Fatalf("PolicyConfig() error = %v", err)
-	}
-	if got, want := cfg.Clients[0].ID, "ci-builder"; got != want {
-		t.Fatalf("client id = %q, want %q", got, want)
-	}
-}
-
-func TestPolicyConfigRejectsClientAllowedUnknownRoute(t *testing.T) {
-	path := writeConfig(t, `
-version: 1
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-    allowed:
-      pull:
-        - missing-route
-sources: []
-routes: []
-`)
-
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-
-	_, err = cfg.PolicyConfig()
-	if err == nil {
-		t.Fatal("PolicyConfig() error = nil, want unknown allowed route error")
-	}
-}
-
-func TestPolicyConfigRejectsDuplicateClients(t *testing.T) {
-	path := writeConfig(t, `
-version: 1
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_OTHER_USERNAME
-    password_env: REGSTAIR_CLIENT_OTHER_PASSWORD
-sources: []
-routes: []
-`)
-
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-
-	_, err = cfg.PolicyConfig()
-	if err == nil {
-		t.Fatal("PolicyConfig() error = nil, want duplicate client error")
 	}
 }
 

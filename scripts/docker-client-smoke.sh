@@ -4,8 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/admin-session.sh"
 
 project="${COMPOSE_PROJECT_NAME:-regstair-docker-client-smoke}"
-client_username="${REGSTAIR_CLIENT_CI_USERNAME:-ci}"
-client_password="${REGSTAIR_CLIENT_CI_PASSWORD:-secret}"
+client_username="smoke-admin"
 
 free_port() {
   python3 -c 'import socket
@@ -89,17 +88,6 @@ require python3
 cat >"$config_path" <<'YAML'
 version: 1
 
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-    allowed:
-      pull:
-        - curated-library
-      push:
-        - team-a-publish
-
 sources:
   - id: internal-curated
     name: Internal Curated Registry
@@ -174,15 +162,18 @@ REGSTAIR_PORT="$regstair_port" \
 INTERNAL_REGISTRY_PORT="$internal_port" \
 EXTERNAL_REGISTRY_PORT="$external_port" \
 DESTINATION_REGISTRY_PORT="$destination_port" \
-REGSTAIR_CLIENT_CI_USERNAME="$client_username" \
-REGSTAIR_CLIENT_CI_PASSWORD="$client_password" \
   docker compose -p "$project" up -d --build
 
 wait_http "$internal_url/v2/" "internal registry"
 wait_http "$external_url/v2/" "external registry"
 wait_http "$destination_url/v2/" "destination registry"
 wait_http "$regstair_url/healthz" "regstair"
-wait_http "$regstair_url/admin/" "regstair admin UI"
+wait_http "$regstair_url/" "regstair UI"
+
+bootstrap_admin_session "$regstair_url" "$client_username" "smoke administrator password"
+client_id="$(admin_get "$regstair_url" "/admin/api/account" | jq -er '.id')"
+client_password="$(admin_post "$regstair_url" "/admin/api/account/docker-tokens" \
+  '{"label":"docker-client-smoke","expires_in_days":1}' | jq -er '.secret')"
 
 echo "Building and seeding a real Docker image into the external registry..."
 docker build -t "$external_host/library/docker-client-smoke:1.0" "$build_context"
@@ -190,11 +181,9 @@ docker push "$external_host/library/docker-client-smoke:1.0"
 
 docker image rm "$external_host/library/docker-client-smoke:1.0" >/dev/null
 
-echo "Verifying Docker pull requires Regstair login..."
-if DOCKER_CONFIG="$docker_config" docker pull "$regstair_host/library/docker-client-smoke:1.0" >/dev/null 2>&1; then
-  echo "docker pull unexpectedly succeeded without login" >&2
-  exit 1
-fi
+echo "Verifying public Docker pull remains anonymous..."
+DOCKER_CONFIG="$docker_config" docker pull "$regstair_host/library/docker-client-smoke:1.0"
+docker image rm "$regstair_host/library/docker-client-smoke:1.0" >/dev/null
 
 echo "Logging Docker client into Regstair..."
 printf '%s\n' "$client_password" |
@@ -203,7 +192,7 @@ printf '%s\n' "$client_password" |
 echo "Pulling through Regstair with Docker..."
 DOCKER_CONFIG="$docker_config" docker pull "$regstair_host/library/docker-client-smoke:1.0"
 
-echo "Verifying unauthorized Docker pull is denied..."
+echo "Verifying protected namespace does not fall back..."
 if DOCKER_CONFIG="$docker_config" docker pull "$regstair_host/platform/api:1.0.0" >/dev/null 2>&1; then
   echo "docker pull unexpectedly succeeded for unauthorized protected route" >&2
   exit 1
@@ -219,12 +208,11 @@ curl -fsSI \
   "$destination_url/v2/production-team-a/docker-client-smoke/manifests/1.0" >/dev/null
 
 echo "Verifying Docker client activity is visible in admin request history..."
-bootstrap_admin_session "$regstair_url"
 admin_get "$regstair_url" "/admin/api/requests?limit=30" |
-  jq -e '
-    any(.requests[]; .logical_reference == "library/docker-client-smoke:1.0" and .client_identity == "ci-builder" and .operation == "pull" and .status == "success") and
-    any(.requests[]; .logical_reference == "platform/api:1.0.0" and .client_identity == "ci-builder" and .status == "denied" and .error_classification == "authorization_denied") and
-    any(.requests[]; .logical_reference == "team-a/docker-client-smoke:1.0" and .client_identity == "ci-builder" and .operation == "push" and .status == "success")
+  jq -e --arg client_id "$client_id" '
+    any(.requests[]; .logical_reference == "library/docker-client-smoke:1.0" and .operation == "pull" and .status == "success") and
+    any(.requests[]; .logical_reference == "platform/api:1.0.0" and .status == "denied") and
+    any(.requests[]; .logical_reference == "team-a/docker-client-smoke:1.0" and .client_identity == $client_id and .operation == "push" and .status == "success")
   ' >/dev/null
 
 echo "Docker client compatibility smoke test passed."

@@ -20,13 +20,6 @@ import (
 )
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "admin" && os.Args[2] == "bootstrap" {
-		if err := runAdminBootstrap(os.Args[3:]); err != nil {
-			slog.Error("administrator bootstrap failed", "error", err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) >= 3 && os.Args[1] == "admin" && os.Args[2] == "reset-password" {
 		if err := runAdminResetPassword(os.Args[3:]); err != nil {
 			slog.Error("administrator password recovery failed", "error", err)
@@ -171,37 +164,6 @@ func runAdminResetPassword(args []string) error {
 		return err
 	}
 	slog.Info("administrator password recovery completed", "username", updated.Username, "user_id", updated.ID)
-	return nil
-}
-
-func runAdminBootstrap(args []string) error {
-	flags := flag.NewFlagSet("regstair admin bootstrap", flag.ContinueOnError)
-	var metadataPath, username, passwordFile string
-	flags.StringVar(&metadataPath, "metadata-path", "/var/lib/regstair/content/metadata/regstair.db", "path to SQLite metadata database")
-	flags.StringVar(&username, "username", "", "local administrator username")
-	flags.StringVar(&passwordFile, "password-file", "", "path to a root-readable file containing the administrator password")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if username == "" || passwordFile == "" {
-		return fmt.Errorf("username and password-file are required")
-	}
-	contents, err := os.ReadFile(passwordFile)
-	if err != nil {
-		return fmt.Errorf("read administrator password file: %w", err)
-	}
-	password := strings.TrimSuffix(strings.TrimSuffix(string(contents), "\n"), "\r")
-	repo, err := metadata.NewSQLiteRepository(metadataPath)
-	if err != nil {
-		return err
-	}
-	defer repo.Close()
-	service := auth.NewAccountService(repo, auth.NewPasswordHasher(auth.DefaultPasswordParams, nil))
-	user, err := service.BootstrapAdmin(context.Background(), username, password)
-	if err != nil {
-		return err
-	}
-	slog.Info("administrator bootstrap completed", "username", user.Username, "user_id", user.ID)
 	return nil
 }
 

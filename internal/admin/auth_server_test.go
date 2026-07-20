@@ -267,10 +267,18 @@ func TestDockerTokenHTTPIsOneTimeAndAuthenticatesLocally(t *testing.T) {
 	if issued.Secret == "" || len(issued.Token.TokenHash) != 0 {
 		t.Fatalf("issued token = %#v", issued)
 	}
-	authenticator := auth.NewGatewayAuthenticator(nil, auth.NewDockerTokenService(fixture.repo, nil, nil))
-	identity, ok := authenticator.AuthenticateBasic("admin", issued.Secret)
-	if !ok || identity.ID != fixture.admin.ID {
-		t.Fatalf("local docker authentication = %q/%v", identity, ok)
+	oci, err := auth.NewOCITokenService(auth.NewDockerTokenService(fixture.repo, nil, nil), bytes.Repeat([]byte{7}, 32), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator := auth.NewGatewayAuthenticator(oci)
+	accessToken, _, err := authenticator.Issue(context.Background(), "admin", issued.Secret, "library/alpine", []string{"pull"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := authenticator.Authenticate(context.Background(), accessToken, "library/alpine", "pull")
+	if err != nil || principal.ID != fixture.admin.ID {
+		t.Fatalf("local docker authentication = %q/%v", principal, err)
 	}
 	listed := requestJSON(t, fixture.server, http.MethodGet, "/admin/api/account/docker-tokens", nil, login.cookie, "")
 	if listed.Code != http.StatusOK || !bytes.Contains(listed.Body.Bytes(), []byte(issued.Token.ID)) || bytes.Contains(listed.Body.Bytes(), []byte(issued.Secret)) || bytes.Contains(listed.Body.Bytes(), []byte("token_hash")) {
@@ -280,7 +288,7 @@ func TestDockerTokenHTTPIsOneTimeAndAuthenticatesLocally(t *testing.T) {
 	if revoked.Code != http.StatusNoContent {
 		t.Fatalf("revoke token = %d %s", revoked.Code, revoked.Body.String())
 	}
-	if _, ok := authenticator.AuthenticateBasic("admin", issued.Secret); ok {
+	if _, err := authenticator.Authenticate(context.Background(), accessToken, "library/alpine", "pull"); err == nil {
 		t.Fatal("revoked token still authenticates")
 	}
 	audit, _ := fixture.repo.ListAuditEvents(context.Background(), 20)

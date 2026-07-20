@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"regstair/internal/identity"
 	"regstair/internal/metadata"
 	"regstair/internal/policy"
 	"regstair/internal/registry"
@@ -39,10 +40,10 @@ func TestPushResolverPublishesToPolicyDestination(t *testing.T) {
 	})
 
 	result, err := resolver.Push(context.Background(), PushRequest{
-		Repository:     "team-a/service",
-		Reference:      "4.1",
-		Manifest:       testManifest(),
-		ClientIdentity: "ci-builder",
+		Repository: "team-a/service",
+		Reference:  "4.1",
+		Manifest:   testManifest(),
+		Principal:  identity.Principal{Kind: identity.KindLocalUser, ID: "ci-builder"},
 	})
 	if err != nil {
 		t.Fatalf("Push() error = %v", err)
@@ -136,10 +137,10 @@ func TestPushResolverDeniesUnauthorizedRoute(t *testing.T) {
 	)
 
 	_, err := resolver.Push(context.Background(), PushRequest{
-		Repository:     "team-a/service",
-		Reference:      "4.1",
-		Manifest:       testManifest(),
-		ClientIdentity: "ci-builder",
+		Repository: "team-a/service",
+		Reference:  "4.1",
+		Manifest:   testManifest(),
+		Principal:  identity.Principal{Kind: identity.KindLocalUser, ID: "ci-builder"},
 	})
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Push() error = %v, want ErrUnauthorized", err)

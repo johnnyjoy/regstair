@@ -28,22 +28,6 @@ When it passes, leave the stack running and open:
 http://127.0.0.1:8080/
 ```
 
-For the authenticated path, run:
-
-```bash
-./scripts/compose-auth-smoke.sh
-```
-
-That script starts a separate Compose project named `regstair-auth-smoke` by default and chooses available host ports dynamically unless the port environment variables are set.
-
-To prove that clients authenticate once to Regstair while Regstair owns the upstream credential:
-
-```bash
-./scripts/compose-proxy-auth-smoke.sh
-```
-
-This starts the optional `proxy-auth` Compose profile, seeds a registry protected by Basic auth, verifies pull and push through Regstair, checks redacted admin auth status, and confirms a bad stored upstream credential fails.
-
 To run the real Harbor integration:
 
 ```bash
@@ -218,24 +202,6 @@ Stop containers and remove the persistent demo volume:
 
 ```bash
 docker compose -p regstair-smoke down -v
-```
-
-Stop the authenticated smoke stack:
-
-```bash
-docker compose -p regstair-auth-smoke down
-```
-
-Remove its persistent volume:
-
-```bash
-docker compose -p regstair-auth-smoke down -v
-```
-
-Stop and remove the proxy-auth smoke stack:
-
-```bash
-docker compose -p regstair-proxy-auth-smoke --profile proxy-auth down -v
 ```
 
 Stop the Docker client smoke stack:
