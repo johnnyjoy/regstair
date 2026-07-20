@@ -14,11 +14,20 @@ bootstrap_admin_session() {
     --data-binary "$(jq -nc --arg username "$username" --arg password "$password" \
       '{username:$username,password:$password,display_name:"Smoke test administrator"}')")"
 
-  ADMIN_SESSION_COOKIE="$(awk 'tolower($1) == "set-cookie:" {print $2}' "$headers" | tr -d '\r' | cut -d';' -f1 | tail -n 1)"
+  ADMIN_COOKIE_HEADER="$({
+    awk '
+      tolower($1) == "set-cookie:" {
+        cookie = $2
+        sub(/;.*/, "", cookie)
+        cookies = cookies (cookies == "" ? "" : "; ") cookie
+      }
+      END { print cookies }
+    ' "$headers"
+  })"
   ADMIN_CSRF_TOKEN="$(jq -er '.csrf_token' <<<"$response")"
   rm -f "$headers"
 
-  if [[ -z "$ADMIN_SESSION_COOKIE" || -z "$ADMIN_CSRF_TOKEN" ]]; then
+  if [[ "$ADMIN_COOKIE_HEADER" != *"regstair_session="* || -z "$ADMIN_CSRF_TOKEN" ]]; then
     echo "first-run setup did not return an administrator session" >&2
     return 1
   fi
@@ -27,7 +36,7 @@ bootstrap_admin_session() {
 admin_get() {
   local base_url="$1"
   local path="$2"
-  curl -fsS -H "Cookie: $ADMIN_SESSION_COOKIE" "$base_url$path"
+  curl -fsS -H "Cookie: $ADMIN_COOKIE_HEADER" "$base_url$path"
 }
 
 admin_post() {
@@ -35,7 +44,7 @@ admin_post() {
   local path="$2"
   local body="$3"
   curl -fsS -X POST \
-    -H "Cookie: $ADMIN_SESSION_COOKIE" \
+    -H "Cookie: $ADMIN_COOKIE_HEADER" \
     -H "X-CSRF-Token: $ADMIN_CSRF_TOKEN" \
     -H 'Content-Type: application/json' \
     --data-binary "$body" \

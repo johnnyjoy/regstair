@@ -255,8 +255,11 @@ fi
 
 echo "Verifying admin API exposes routes, requests, artifacts, and provenance..."
 bootstrap_admin_session "$regstair_url"
-admin_body="$(admin_get "$regstair_url" "/admin/")"
-grep -q "Registry operations" <<<"$admin_body"
+admin_body="$(admin_get "$regstair_url" "/")"
+if ! grep -q 'aria-label="System health"' <<<"$admin_body"; then
+  echo "authenticated overview did not render the system health region" >&2
+  exit 1
+fi
 admin_get "$regstair_url" "/admin/api/sources" | jq -e '.sources | length == 3' >/dev/null
 admin_get "$regstair_url" "/admin/api/routes" | jq -e '.routes | length == 3' >/dev/null
 admin_get "$regstair_url" "/admin/api/artifacts" |
