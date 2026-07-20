@@ -21,13 +21,20 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
+
+      - name: Verify dependency checksums
+        run: |
+          test -f go.sum || { echo "go.sum must be committed" >&2; exit 1; }
+          go mod download
+          go mod verify
 
       - name: Test
         run: go test ./...
@@ -41,7 +48,7 @@ jobs:
       COMPOSE_PROJECT_NAME: regstair-ci
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build and run OCI gateway smoke test
         run: ./scripts/compose-smoke.sh
