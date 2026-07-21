@@ -1,6 +1,7 @@
 package tlsidentity
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -32,6 +33,15 @@ type Identity struct {
 }
 
 func Ensure(dir string, hosts []string) (Identity, error) {
+	return ensure(dir, hosts, false)
+}
+
+// EnsureExact creates or reissues an identity whose SANs exactly match hosts.
+func EnsureExact(dir string, hosts []string) (Identity, error) {
+	return ensure(dir, hosts, true)
+}
+
+func ensure(dir string, hosts []string, exact bool) (Identity, error) {
 	identity := Identity{
 		CACertFile: filepath.Join(dir, caCertName),
 		CAKeyFile:  filepath.Join(dir, caKeyName),
@@ -75,12 +85,36 @@ func Ensure(dir string, hosts []string) (Identity, error) {
 		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots}); err != nil {
 			return Identity{}, fmt.Errorf("verify existing TLS server certificate against local CA: %w", err)
 		}
+		coversHosts := true
 		for _, host := range hosts {
 			host = strings.TrimSpace(host)
 			if host != "" {
 				if err := leaf.VerifyHostname(host); err != nil {
-					return Identity{}, fmt.Errorf("existing TLS certificate does not cover %q: %w", host, err)
+					coversHosts = false
+					break
 				}
+			}
+		}
+		if exact && len(leaf.DNSNames)+len(leaf.IPAddresses) != len(dnsNames)+len(ipAddresses) {
+			coversHosts = false
+		}
+		if !coversHosts {
+			serverSigner, ok := serverPair.PrivateKey.(crypto.Signer)
+			if !ok {
+				return Identity{}, fmt.Errorf("existing TLS server key cannot sign certificates")
+			}
+			caSigner, ok := caPair.PrivateKey.(crypto.Signer)
+			if !ok {
+				return Identity{}, fmt.Errorf("existing TLS certificate authority key cannot sign certificates")
+			}
+			now := time.Now().UTC()
+			template := serverCertificateTemplate(now, dnsNames, ipAddresses)
+			serverDER, err := x509.CreateCertificate(rand.Reader, template, ca, serverSigner.Public(), caSigner)
+			if err != nil {
+				return Identity{}, fmt.Errorf("reissue TLS server certificate: %w", err)
+			}
+			if err := replacePEM(identity.CertFile, "CERTIFICATE", serverDER, 0o644); err != nil {
+				return Identity{}, fmt.Errorf("replace TLS server certificate: %w", err)
 			}
 		}
 		return identity, nil
@@ -102,7 +136,7 @@ func Ensure(dir string, hosts []string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	serverTemplate := &x509.Certificate{SerialNumber: serial(), Subject: pkix.Name{CommonName: firstName(dnsNames, ipAddresses)}, DNSNames: dnsNames, IPAddresses: ipAddresses, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(1, 0, 0), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	serverTemplate := serverCertificateTemplate(now, dnsNames, ipAddresses)
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caTemplate, &serverKey.PublicKey, caKey)
 	if err != nil {
 		return Identity{}, err
@@ -128,6 +162,10 @@ func Ensure(dir string, hosts []string) (Identity, error) {
 	return identity, nil
 }
 
+func serverCertificateTemplate(now time.Time, dnsNames []string, ipAddresses []net.IP) *x509.Certificate {
+	return &x509.Certificate{SerialNumber: serial(), Subject: pkix.Name{CommonName: firstName(dnsNames, ipAddresses)}, DNSNames: dnsNames, IPAddresses: ipAddresses, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(1, 0, 0), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+}
+
 func normalizeHosts(hosts []string) ([]string, []net.IP) {
 	seen := map[string]bool{}
 	var dns []string
@@ -145,6 +183,50 @@ func normalizeHosts(hosts []string) ([]string, []net.IP) {
 		}
 	}
 	return dns, ips
+}
+
+// DiscoverHostAddresses returns globally scoped addresses on active Linux host interfaces.
+func DiscoverHostAddresses() ([]string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list host network interfaces: %w", err)
+	}
+	var addresses []net.Addr
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 || ignoredLinuxInterface(networkInterface.Name) {
+			continue
+		}
+		interfaceAddresses, err := networkInterface.Addrs()
+		if err != nil {
+			return nil, fmt.Errorf("list addresses for interface %s: %w", networkInterface.Name, err)
+		}
+		addresses = append(addresses, interfaceAddresses...)
+	}
+	return usableAddressStrings(addresses), nil
+}
+
+func ignoredLinuxInterface(name string) bool {
+	return name == "docker0" || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "virbr")
+}
+
+func usableAddressStrings(addresses []net.Addr) []string {
+	seen := map[string]bool{}
+	result := []string{}
+	for _, address := range addresses {
+		ip, _, err := net.ParseCIDR(address.String())
+		if err != nil {
+			ip = net.ParseIP(address.String())
+		}
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			continue
+		}
+		value := ip.String()
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func firstName(dns []string, ips []net.IP) string {
@@ -172,4 +254,29 @@ func writeExclusivePEM(path, kind string, der []byte, mode os.FileMode) error {
 		return err
 	}
 	return file.Close()
+}
+
+func replacePEM(path, kind string, der []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".regstair-cert-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := pem.Encode(temporary, &pem.Block{Type: kind, Bytes: der}); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }

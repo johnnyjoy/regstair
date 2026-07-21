@@ -1,7 +1,23 @@
 services:
+  tls-init:
+    image: ${REGSTAIR_IMAGE:-regstair:local}
+    build: .
+    command:
+      - tls
+      - init
+      - -dir=/var/lib/regstair/tls
+      - -hosts=${REGSTAIR_TLS_HOSTS:-localhost,127.0.0.1,::1,regstair}
+    network_mode: host
+    restart: "no"
+    volumes:
+      - regstair-tls:/var/lib/regstair/tls
+
   regstair:
     image: ${REGSTAIR_IMAGE:-regstair:local}
     build: .
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
     command:
       - -config=/etc/regstair/regstair.yaml
       - -content-root=/var/lib/regstair/content
@@ -14,8 +30,8 @@ services:
       - -credential-key-file=/var/lib/regstair/credentials/key
       - -generate-credential-key=${REGSTAIR_GENERATE_CREDENTIAL_KEY:-true}
     ports:
-      - "${REGSTAIR_BIND_ADDRESS:-127.0.0.1}:${REGSTAIR_PORT:-8080}:8080"
-      - "${REGSTAIR_BIND_ADDRESS:-127.0.0.1}:${REGSTAIR_HTTPS_PORT:-8443}:8443"
+      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_PORT:-8080}:8080"
+      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_HTTPS_PORT:-8443}:8443"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

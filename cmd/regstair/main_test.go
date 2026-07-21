@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,6 +30,30 @@ func TestConfigureTLSGeneratesAndReusesLocalIdentity(t *testing.T) {
 	}
 	if options.TLSCertFile != again.TLSCertFile {
 		t.Fatal("persistent TLS identity was not reused")
+	}
+}
+
+func TestRunTLSInitDiscoversHostAddressesAndCreatesIdentity(t *testing.T) {
+	dir := t.TempDir()
+	original := discoverTLSHostAddresses
+	discoverTLSHostAddresses = func() ([]string, error) { return []string{"10.1.1.79"}, nil }
+	t.Cleanup(func() { discoverTLSHostAddresses = original })
+	if err := runTLSInit([]string{"-dir", dir, "-hosts", "regstair.example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	pair, err := tls.LoadX509KeyPair(filepath.Join(dir, "regstair.crt"), filepath.Join(dir, "regstair.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.VerifyHostname("regstair.example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.VerifyHostname("10.1.1.79"); err != nil {
+		t.Fatal(err)
 	}
 }
 

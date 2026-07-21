@@ -23,7 +23,16 @@ import (
 	"regstair/internal/tlsidentity"
 )
 
+var discoverTLSHostAddresses = tlsidentity.DiscoverHostAddresses
+
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "tls" && os.Args[2] == "init" {
+		if err := runTLSInit(os.Args[3:]); err != nil {
+			slog.Error("TLS host identity initialization failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) >= 3 && os.Args[1] == "admin" && os.Args[2] == "reset-password" {
 		if err := runAdminResetPassword(os.Args[3:]); err != nil {
 			slog.Error("administrator password recovery failed", "error", err)
@@ -91,6 +100,27 @@ func main() {
 		slog.Error("regstair stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runTLSInit(args []string) error {
+	flags := flag.NewFlagSet("regstair tls init", flag.ContinueOnError)
+	var directory, configuredHosts string
+	flags.StringVar(&directory, "dir", "/var/lib/regstair/tls", "directory for the persistent TLS identity")
+	flags.StringVar(&configuredHosts, "hosts", "localhost,127.0.0.1,::1,regstair", "additional comma-separated DNS names and IP addresses")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	discovered, err := discoverTLSHostAddresses()
+	if err != nil {
+		return err
+	}
+	hosts := append(strings.Split(configuredHosts, ","), discovered...)
+	identity, err := tlsidentity.EnsureExact(directory, hosts)
+	if err != nil {
+		return err
+	}
+	slog.Info("TLS host identity initialized", "certificate", identity.CertFile, "discovered_address_count", len(discovered))
+	return nil
 }
 
 func ensureCredentialKey(path string) error {
