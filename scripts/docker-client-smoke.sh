@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/admin-session.sh"
 
 project="${COMPOSE_PROJECT_NAME:-regstair-docker-client-smoke}"
+compose=(docker compose -f docker-compose.yml -f compose.fixture.yml -p "$project")
 client_username="smoke-admin"
 
 free_port() {
@@ -156,7 +157,7 @@ DOCKERFILE
 printf 'hello from docker client smoke\n' >"$build_context/hello.txt"
 
 echo "Starting Docker client compatibility environment..."
-docker compose -p "$project" down -v >/dev/null 2>&1 || true
+"${compose[@]}" down -v >/dev/null 2>&1 || true
 REGSTAIR_CONFIG="$config_path" \
 REGSTAIR_PORT="$regstair_port" \
 REGSTAIR_HTTPS_LISTEN= \
@@ -164,7 +165,7 @@ REGSTAIR_HTTPS_PORT=0 \
 INTERNAL_REGISTRY_PORT="$internal_port" \
 EXTERNAL_REGISTRY_PORT="$external_port" \
 DESTINATION_REGISTRY_PORT="$destination_port" \
-  docker compose -p "$project" up -d --build
+  "${compose[@]}" up -d --build
 
 wait_http "$internal_url/v2/" "internal registry"
 wait_http "$external_url/v2/" "external registry"

@@ -23,15 +23,15 @@ services:
       - -content-root=/var/lib/regstair/content
       - -listen=:8080
       - -https-listen=${REGSTAIR_HTTPS_LISTEN-:8443}
-      - -https-public-port=${REGSTAIR_HTTPS_PORT:-8443}
+      - -https-public-port=${REGSTAIR_HTTPS_PORT:-9443}
       - -tls-dir=/var/lib/regstair/tls
       - -tls-hosts=${REGSTAIR_TLS_HOSTS:-localhost,127.0.0.1,::1,regstair}
       - -credential-key-id=${REGSTAIR_CREDENTIAL_KEY_ID:-local-primary}
       - -credential-key-file=/var/lib/regstair/credentials/key
       - -generate-credential-key=${REGSTAIR_GENERATE_CREDENTIAL_KEY:-true}
     ports:
-      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_PORT:-8080}:8080"
-      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_HTTPS_PORT:-8443}:8443"
+      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_PORT:-9080}:8080"
+      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_HTTPS_PORT:-9443}:8443"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -39,24 +39,6 @@ services:
       - regstair-data:/var/lib/regstair/content
       - regstair-tls:/var/lib/regstair/tls
       - regstair-credentials:/var/lib/regstair/credentials
-
-  internal-registry:
-    image: registry:2
-    profiles: [fixture]
-    ports:
-      - "${REGISTRY_BIND_ADDRESS:-127.0.0.1}:${INTERNAL_REGISTRY_PORT:-5001}:5000"
-
-  external-registry:
-    image: registry:2
-    profiles: [fixture]
-    ports:
-      - "${REGISTRY_BIND_ADDRESS:-127.0.0.1}:${EXTERNAL_REGISTRY_PORT:-5002}:5000"
-
-  destination-registry:
-    image: registry:2
-    profiles: [fixture]
-    ports:
-      - "${REGISTRY_BIND_ADDRESS:-127.0.0.1}:${DESTINATION_REGISTRY_PORT:-5003}:5000"
 
 volumes:
   regstair-data:

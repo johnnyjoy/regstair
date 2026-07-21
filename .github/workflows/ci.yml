@@ -90,9 +90,9 @@ jobs:
       - name: Show service state and logs after failure
         if: failure()
         run: |
-          docker compose -p "$COMPOSE_PROJECT_NAME" ps -a
-          docker compose -p "$COMPOSE_PROJECT_NAME" logs --no-color
+          docker compose -f docker-compose.yml -f compose.fixture.yml -p "$COMPOSE_PROJECT_NAME" ps -a
+          docker compose -f docker-compose.yml -f compose.fixture.yml -p "$COMPOSE_PROJECT_NAME" logs --no-color
 
       - name: Remove test environment
         if: always()
-        run: docker compose -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans
+        run: docker compose -f docker-compose.yml -f compose.fixture.yml -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans

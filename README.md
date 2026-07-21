@@ -87,23 +87,23 @@ Compose creates the credential-encryption key once in a dedicated persistent vol
 Regstair creates a persistent local certificate authority and HTTPS certificate on first start. Install its public CA for Docker before using the registry endpoint:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/regstair-ca.crt -o regstair-ca.crt
-sudo mkdir -p /etc/docker/certs.d/127.0.0.1:8443
-sudo cp regstair-ca.crt /etc/docker/certs.d/127.0.0.1:8443/ca.crt
+curl -fsS http://127.0.0.1:9080/regstair-ca.crt -o regstair-ca.crt
+sudo mkdir -p /etc/docker/certs.d/127.0.0.1:9443
+sudo cp regstair-ca.crt /etc/docker/certs.d/127.0.0.1:9443/ca.crt
 sudo systemctl restart docker
 ```
 
-Import the same `regstair-ca.crt` into the workstation or browser trust store, then open [https://127.0.0.1:8443/setup](https://127.0.0.1:8443/setup) and create the first administrator. Setup is available only while the user database is empty and closes permanently after the first account is created. The HTTP listener on port `8080` serves health checks and the public CA certificate and redirects other requests to HTTPS.
+Import the same `regstair-ca.crt` into the workstation or browser trust store, then open [https://127.0.0.1:9443/setup](https://127.0.0.1:9443/setup) and create the first administrator. Setup is available only while the user database is empty and closes permanently after the first account is created. The HTTP listener is published on host port `9080`; it serves health checks and the public CA certificate and redirects other requests to HTTPS on `9443`. Set `REGSTAIR_PORT` or `REGSTAIR_HTTPS_PORT` only when a different host port is required.
 
 ### First Docker Operation
 
 Pull public Docker Hub content through Regstair without adding Docker Hub credentials:
 
 ```bash
-docker pull 127.0.0.1:8443/library/alpine:latest
+docker pull 127.0.0.1:9443/library/alpine:latest
 ```
 
-Repeat the pull to exercise the local content-addressed cache, then open [Cache](https://127.0.0.1:8443/cache) or [Requests](https://127.0.0.1:8443/requests) to inspect the result.
+Repeat the pull to exercise the local content-addressed cache, then open [Cache](https://127.0.0.1:9443/cache) or [Requests](https://127.0.0.1:9443/requests) to inspect the result.
 
 ### Private Content And Pushes
 
@@ -112,12 +112,12 @@ In Regstair, open **Account**, create a Docker token, and retain the token when 
 Authenticate using your local Regstair username and the token as the password:
 
 ```bash
-docker login 127.0.0.1:8443 --username YOUR_USERNAME
+docker login 127.0.0.1:9443 --username YOUR_USERNAME
 ```
 
 Open **Registry access** and connect Docker Hub or GitHub Container Registry with the credentials issued by that provider. Image names are matched by routing rules; clients do not select an upstream by placing its hostname in the repository path. Add an organization-specific push route before publishing a user-owned repository.
 
-Open [Requests](https://127.0.0.1:8443/requests) to inspect the authenticated user, selected route, rewritten destination, status, and routing explanation.
+Open [Requests](https://127.0.0.1:9443/requests) to inspect the authenticated user, selected route, rewritten destination, status, and routing explanation.
 
 Stop the evaluation environment:
 
@@ -193,7 +193,7 @@ The repository Compose file is an evaluation and integration topology, not a com
 - restrict direct network access to upstream registries and fixture ports;
 - test restore and administrator recovery before relying on the service.
 
-The browser session cookie is `Secure`, `HttpOnly`, and `SameSite=Strict`. The CSRF cookie is `Secure` and `SameSite=Strict` but intentionally script-readable so the browser client can submit the synchronizer token. Regstair serves HTTPS by default on `8443`; the generated CA and private keys persist in the `regstair-tls` volume. On Linux, the Compose `tls-init` service runs once in the host network namespace before Regstair and automatically includes active non-loopback host addresses in the server certificate. Docker bridges and virtual Ethernet interfaces are excluded. `REGSTAIR_TLS_HOSTS` adds deployment DNS names or additional IP addresses; it is not required for ordinary host-address discovery. When the detected or configured identities change, Regstair preserves its local CA and server private key and atomically reissues the server certificate, so existing clients continue trusting the same CA.
+The browser session cookie is `Secure`, `HttpOnly`, and `SameSite=Strict`. The CSRF cookie is `Secure` and `SameSite=Strict` but intentionally script-readable so the browser client can submit the synchronizer token. Compose publishes Regstair HTTPS on host port `9443` and HTTP on `9080`; the HTTPS listener remains container-internal port `8443`. The generated CA and private keys persist in the `regstair-tls` volume. On Linux, the Compose `tls-init` service runs once in the host network namespace before Regstair and automatically includes active non-loopback host addresses in the server certificate. Docker bridges and virtual Ethernet interfaces are excluded. `REGSTAIR_TLS_HOSTS` adds deployment DNS names or additional IP addresses; it is not required for ordinary host-address discovery. When the detected or configured identities change, Regstair preserves its local CA and server private key and atomically reissues the server certificate, so existing clients continue trusting the same CA.
 
 Losing every key capable of decrypting stored upstream credentials permanently loses access to those credential values. Users must replace affected credentials; Regstair cannot recover them.
 

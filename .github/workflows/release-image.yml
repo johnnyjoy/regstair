@@ -48,14 +48,14 @@ jobs:
         env:
           COMPOSE_PROJECT_NAME: regstair-release-verify
         run: |
-          docker compose -p "$COMPOSE_PROJECT_NAME" ps -a
-          docker compose -p "$COMPOSE_PROJECT_NAME" logs --no-color
+          docker compose -f docker-compose.yml -f compose.fixture.yml -p "$COMPOSE_PROJECT_NAME" ps -a
+          docker compose -f docker-compose.yml -f compose.fixture.yml -p "$COMPOSE_PROJECT_NAME" logs --no-color
 
       - name: Remove test environment
         if: always()
         env:
           COMPOSE_PROJECT_NAME: regstair-release-verify
-        run: docker compose -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans
+        run: docker compose -f docker-compose.yml -f compose.fixture.yml -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans
 
   build:
     name: Build ${{ matrix.platform }}
