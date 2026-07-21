@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"html"
@@ -218,7 +219,7 @@ func TestServerRejectsUnsupportedAdminRoute(t *testing.T) {
 	}
 }
 
-func TestServerRendersAdminDashboard(t *testing.T) {
+func TestServerServesReactRequestsWorkspace(t *testing.T) {
 	repo := metadata.NewMemoryRepository()
 	if err := repo.RecordRequestEvent(testContext(t), metadata.RequestEvent{
 		Operation:           metadata.OperationPull,
@@ -256,37 +257,23 @@ func TestServerRendersAdminDashboard(t *testing.T) {
 		t.Fatalf("content type = %q, want %q", got, want)
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Regstair", "library/nginx:1.27", "cache hit", "external-registry", "Skip to main content", `id="theme"`, `scope="col"`, "<caption>", `<footer class="page-footer">`, `href="/requests/1"`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("dashboard body missing %q", want)
-		}
-	}
-	if strings.Contains(body, "<style") {
-		t.Fatal("dashboard contains inline styles, want CSP-compatible embedded stylesheet")
-	}
-	if !strings.Contains(body, `/admin/static/admin.css?v=`) {
-		t.Fatal("dashboard stylesheet URL is not content-versioned")
-	}
-	if !strings.Contains(body, `/admin/static/admin.js?v=`) {
-		t.Fatal("dashboard script URL is not content-versioned")
+	if !strings.Contains(body, `<div id="root"></div>`) || !strings.Contains(body, `type="module"`) {
+		t.Fatalf("requests route did not serve the React application: %s", body)
 	}
 }
 
 func TestServerRendersDedicatedAdminPages(t *testing.T) {
 	server := NewServer(Config{Config: testConfig(), Repo: metadata.NewMemoryRepository()})
-	tests := []struct {
-		path       string
-		title      string
-		activeHref string
-		present    string
-		absent     string
-	}{
-		{path: "/", title: "Overview", activeHref: "/", present: `aria-label="System health"`, absent: `id="requests"`},
-		{path: "/requests", title: "Requests", activeHref: "/requests", present: `id="requests"`, absent: `id="routes"`},
-		{path: "/routes", title: "Routes", activeHref: "/routes", present: `id="routes"`, absent: `id="sources"`},
-		{path: "/sources", title: "Sources", activeHref: "/sources", present: `id="sources"`, absent: `id="routes"`},
-		{path: "/cache", title: "Cache", activeHref: "/cache", present: `id="artifacts"`, absent: `id="requests"`},
+	application := httptest.NewRecorder()
+	server.ServeHTTP(application, httptest.NewRequest(http.MethodGet, "/", nil))
+	if application.Code != http.StatusOK {
+		t.Fatalf("application status = %d, want %d", application.Code, http.StatusOK)
 	}
+	if body := application.Body.String(); !strings.Contains(body, `<div id="root"></div>`) || !strings.Contains(body, `type="module"`) || strings.Contains(body, `<h1>Overview</h1>`) {
+		t.Fatalf("root did not serve the React application document: %s", body)
+	}
+
+	tests := []struct{ path, title, activeHref, present, absent string }{}
 	for _, test := range tests {
 		t.Run(test.title, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -307,7 +294,7 @@ func TestServerRendersDedicatedAdminPages(t *testing.T) {
 	}
 }
 
-func TestDashboardShowsTimeScopedHealthAttentionAndActivity(t *testing.T) {
+func TestReactOverviewDocumentAndOperationalAPIsExposeActivity(t *testing.T) {
 	repo := metadata.NewMemoryRepository()
 	now := time.Now().UTC()
 	events := []metadata.RequestEvent{
@@ -323,30 +310,41 @@ func TestDashboardShowsTimeScopedHealthAttentionAndActivity(t *testing.T) {
 	}
 
 	server := NewServer(Config{Config: testConfig(), Repo: repo})
-	body := getHTML(t, server, "/")
-	for _, want := range []string{
-		`aria-label="System health"`,
-		"Operational",
-		"Last 24 hours",
-		`<strong>3</strong>`,
-		"33.3%",
-		"50.0%",
-		"200 ms",
-		"300 ms",
-		"Needs attention",
-		`href="/requests?status=error"`,
-		`href="/requests?operation=push&amp;status=denied"`,
-		`href="/requests?error_classification=upstream_authentication_failed"`,
-		"library/nginx:latest",
-		"team-a/service:4.1",
-		`href="/requests"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("dashboard missing %q", want)
-		}
+	application := httptest.NewRecorder()
+	server.ServeHTTP(application, httptest.NewRequest(http.MethodGet, "/", nil))
+	if application.Code != http.StatusOK {
+		t.Fatalf("application = %d %s", application.Code, application.Body.String())
 	}
-	if strings.Contains(body, "old/ignored:1") {
-		t.Fatal("dashboard includes activity outside its stated 24-hour window")
+	document := application.Body.String()
+	nonceMatch := regexp.MustCompile(`name="csp-nonce" content="([^"]+)"`).FindStringSubmatch(document)
+	if len(nonceMatch) != 2 || !strings.Contains(application.Header().Get("Content-Security-Policy"), "'nonce-"+nonceMatch[1]+"'") {
+		t.Fatalf("application document and CSP do not share a style nonce")
+	}
+	assetMatch := regexp.MustCompile(`src="(/assets/[^"]+\.js)"`).FindStringSubmatch(document)
+	if len(assetMatch) != 2 {
+		t.Fatalf("application document does not reference a hashed JavaScript asset: %s", document)
+	}
+	asset := httptest.NewRecorder()
+	server.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, assetMatch[1], nil))
+	if asset.Code != http.StatusOK || !strings.Contains(asset.Header().Get("Content-Type"), "javascript") {
+		t.Fatalf("application asset response = %d %q", asset.Code, asset.Header().Get("Content-Type"))
+	}
+	if got := asset.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("application asset cache control = %q", got)
+	}
+
+	requests := getJSON[RequestsResponse](t, server, "/admin/api/requests?limit=12")
+	if len(requests.Requests) != 4 {
+		t.Fatalf("overview requests = %d, want 4", len(requests.Requests))
+	}
+	for _, want := range []string{"library/nginx:latest", "team-a/service:4.1"} {
+		found := false
+		for _, event := range requests.Requests {
+			found = found || event.LogicalReference == want
+		}
+		if !found {
+			t.Errorf("overview API missing %q", want)
+		}
 	}
 }
 
@@ -365,39 +363,13 @@ func TestDashboardFiltersAndPaginatesRequests(t *testing.T) {
 
 	server := NewServer(Config{Config: testConfig(), Repo: repo})
 	path := "/requests?client_identity=ci-builder&operation=pull&route=curated-library&source=external-registry&reference=library%2F&status=success&limit=1"
-	first := getHTML(t, server, path)
-	for _, want := range []string{
-		"library/nginx:1.27",
-		`value="ci-builder"`,
-		`value="curated-library" selected`,
-		`value="pull" checked`,
-		`value="external-registry" selected`,
-		`value="success" selected`,
-		`limit=1`,
-		`rel="next"`,
-	} {
-		if !strings.Contains(first, want) {
-			t.Fatalf("first dashboard page missing %q", want)
-		}
+	first := getJSON[RequestsResponse](t, server, "/admin/api"+path)
+	if len(first.Requests) != 1 || first.Requests[0].LogicalReference != "library/nginx:1.27" || first.NextCursor == "" {
+		t.Fatalf("first filtered API page = %#v", first)
 	}
-	for _, unwanted := range []string{"library/alpine:edge", "team-a/service:4.1"} {
-		if strings.Contains(first, unwanted) {
-			t.Fatalf("first dashboard page contains filtered request %q", unwanted)
-		}
-	}
-
-	older := dashboardLink(t, first, "next")
-	second := getHTML(t, server, older)
-	if !strings.Contains(second, "library/alpine:edge") || strings.Contains(second, "library/nginx:1.27") {
-		t.Fatalf("second dashboard page did not contain only the older matching request")
-	}
-	if !strings.Contains(second, `rel="prev"`) {
-		t.Fatal("second dashboard page missing newer link")
-	}
-	newer := dashboardLink(t, second, "prev")
-	returned := getHTML(t, server, newer)
-	if !strings.Contains(returned, "library/nginx:1.27") || !strings.Contains(returned, `value="ci-builder"`) {
-		t.Fatal("newer dashboard page did not restore the first filtered page")
+	second := getJSON[RequestsResponse](t, server, "/admin/api"+path+"&cursor="+first.NextCursor)
+	if len(second.Requests) != 1 || second.Requests[0].LogicalReference != "library/alpine:edge" {
+		t.Fatalf("second filtered API page = %#v", second)
 	}
 }
 
@@ -436,7 +408,7 @@ func TestRequestDetailAPIIsFocusedAndRedactsCredentialInternals(t *testing.T) {
 	}
 }
 
-func TestRequestDetailPageIsStableFocusedAndBookmarkable(t *testing.T) {
+func TestRequestDetailPageIsAStableReactRoute(t *testing.T) {
 	repo := metadata.NewMemoryRepository()
 	event := metadata.RequestEvent{Timestamp: time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC), Operation: metadata.OperationPush, ClientIdentity: "alice", LogicalReference: "team-a/service:4.1", MatchedRoute: "team-a-publish", SourceOrDestination: "harbor-team-a", Status: metadata.StatusError, CacheResult: metadata.CacheBypassed, CredentialSource: "current_user", Duration: 1250 * time.Millisecond, BytesTransferred: 4096, ErrorClassification: "upstream_authentication_failed", Explanation: []string{"matched team route", "upstream rejected authentication"}}
 	if err := repo.RecordRequestEvent(testContext(t), event); err != nil {
@@ -444,32 +416,22 @@ func TestRequestDetailPageIsStableFocusedAndBookmarkable(t *testing.T) {
 	}
 	server := NewServer(Config{Config: testConfig(), Repo: repo})
 	body := getHTML(t, server, "/requests/1")
-	for _, want := range []string{"<title>Request investigation | Regstair</title>", `href="/requests" aria-current="page"`, "team-a/service:4.1", "Current user credential", "upstream_authentication_failed", "1.25 s", "4.00 KiB", "Decision steps", `href="/requests"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("request detail missing %q", want)
-		}
-	}
-	if strings.Contains(body, "encrypted_secret") {
-		t.Fatal("request detail exposed credential internals")
-	}
-	missing := httptest.NewRecorder()
-	server.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/requests/999", nil))
-	if missing.Code != http.StatusNotFound {
-		t.Fatalf("missing request detail status = %d, want 404", missing.Code)
+	if !strings.Contains(body, `<div id="root"></div>`) || !strings.Contains(body, `type="module"`) {
+		t.Fatalf("request detail route did not serve React application: %s", body)
 	}
 }
 
-func TestRequestsWorkspaceShowsPresetsAndAppliedFilters(t *testing.T) {
+func TestRequestsWorkspacePreservesFilterQueryForTheReactClient(t *testing.T) {
 	repo := metadata.NewMemoryRepository()
 	if err := repo.RecordRequestEvent(testContext(t), metadata.RequestEvent{Operation: metadata.OperationPull, LogicalReference: "library/alpine:edge", Status: metadata.StatusError, CacheResult: metadata.CacheMiss}); err != nil {
 		t.Fatal(err)
 	}
 	server := NewServer(Config{Config: testConfig(), Repo: repo})
-	body := getHTML(t, server, "/requests?status=error&operation=pull&reference=alpine")
-	for _, want := range []string{"Presets", `href="/requests?status=error"`, `href="/requests?status=denied"`, `href="/requests?cache=miss"`, "Applied filters", "Status: Error", "Operation: Pull", "Reference: alpine", `class="mobile-request-list"`, `href="/requests/1"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("requests workspace missing %q", want)
-		}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/requests?status=error&operation=pull&reference=alpine", nil)
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<div id="root"></div>`) {
+		t.Fatalf("filtered requests route = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -489,66 +451,47 @@ func TestAuditWorkspaceHumanizesFiltersAndCorrelatesEvents(t *testing.T) {
 		}
 	}
 	login := loginHTTP(t, fixture.server, "admin", "correct horse battery staple")
-	response := requestJSON(t, fixture.server, http.MethodGet, "/admin/audit?action=user.access_changed&outcome=success&actor="+fixture.admin.ID+"&correlation=change-42", nil, login.cookie, "")
+	response := requestJSON(t, fixture.server, http.MethodGet, "/admin/api/audit", nil, login.cookie, "")
 	body := response.Body.String()
-	for _, want := range []string{"Changed user access", "admin", "Alice Operator", "user.access_changed", "change-42", "Audit filters", `value="success" selected`, "1 matching event"} {
+	for _, want := range []string{"Changed user access", "admin", "Alice Operator", "user.access_changed", "change-42", "Credential verification failed", "upstream_authentication_failed"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("audit workspace missing %q", want)
+			t.Errorf("audit API missing %q", want)
 		}
 	}
-	if strings.Contains(body, "upstream_authentication_failed") {
-		t.Fatal("audit filter included an unrelated event")
-	}
-}
-
-func TestServerServesEmbeddedAdminStylesheet(t *testing.T) {
-	server := NewServer(Config{Config: testConfig(), Repo: metadata.NewMemoryRepository()})
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/admin/static/admin.css", nil)
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
-	}
-	if got, want := response.Header().Get("Content-Type"), "text/css; charset=utf-8"; got != want {
-		t.Fatalf("content type = %q, want %q", got, want)
-	}
-	if !strings.Contains(response.Body.String(), ":focus-visible") {
-		t.Fatal("admin stylesheet does not contain visible focus treatment")
-	}
-	for _, want := range []string{`:root[data-theme="dark"]`, "prefers-contrast: more", "forced-colors: active"} {
-		if !strings.Contains(response.Body.String(), want) {
-			t.Fatalf("admin stylesheet missing accessibility rule %q", want)
+	for _, forbidden := range []string{"credential_secret", "encrypted_secret", "token_hash"} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Fatalf("audit API exposed forbidden field %q", forbidden)
 		}
 	}
 }
 
-func TestServerServesEmbeddedAdminScript(t *testing.T) {
+func TestLegacyAdminAssetsAreNotReachable(t *testing.T) {
+	server := NewServer(Config{Config: testConfig(), Repo: metadata.NewMemoryRepository()})
+	for _, path := range []string{"/admin/static/admin.css", "/admin/static/admin.js"} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("legacy asset %s status = %d, want %d", path, response.Code, http.StatusNotFound)
+		}
+	}
+}
+
+func TestServerPreservesAndServesRegstairLogo(t *testing.T) {
 	server := NewServer(Config{Config: testConfig(), Repo: metadata.NewMemoryRepository()})
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/admin/static/admin.js", nil)
-	server.ServeHTTP(response, request)
-
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/regstair-logo.png", nil))
 	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+		t.Fatalf("logo status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if got, want := response.Header().Get("Content-Type"), "text/javascript; charset=utf-8"; got != want {
-		t.Fatalf("content type = %q, want %q", got, want)
+	if got := response.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("logo content type = %q, want image/png", got)
 	}
-	for _, want := range []string{"prefers-color-scheme: dark", "localStorage", "Theme changed to"} {
-		if !strings.Contains(response.Body.String(), want) {
-			t.Fatalf("admin script missing theme behavior %q", want)
-		}
+	want, err := adminAssets.ReadFile("frontend-dist/regstair-logo.png")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, want := range []string{"regstair_csrf", "confirmAction", "beforeunload", "navigator.clipboard", "tokenNeedsAcknowledgment", "showMutationError"} {
-		if !strings.Contains(response.Body.String(), want) {
-			t.Fatalf("admin script missing secure mutation behavior %q", want)
-		}
-	}
-	for _, forbidden := range []string{"window.confirm(", "window.alert("} {
-		if strings.Contains(response.Body.String(), forbidden) {
-			t.Fatalf("admin script still uses native interaction %q", forbidden)
-		}
+	if !bytes.Equal(response.Body.Bytes(), want) {
+		t.Fatal("served logo bytes differ from embedded original")
 	}
 }
 

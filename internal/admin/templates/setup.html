@@ -13,7 +13,7 @@
     <section class="setup-identity" aria-labelledby="setup-product">
       <p class="setup-mark">Regstair</p>
       <div>
-        <p class="setup-kicker">Registry control plane</p>
+        <p class="setup-kicker">Registry routing and cache</p>
         <h1 id="setup-product">One endpoint.<br>Every approved registry.</h1>
         <p class="setup-lead">Establish the administrator who will manage access, credentials, routing visibility, and audit history.</p>
       </div>
@@ -30,14 +30,14 @@
       <div class="setup-form-wrap">
         <p class="setup-step">First-run setup</p>
         <h2 id="setup-title">Create the first administrator</h2>
-        <p class="subtle">This account owns the initial control plane. You can add or transfer administration after signing in.</p>
+        <p class="subtle">This account is the initial administrator. You can add or transfer administration after signing in.</p>
         <form id="setup-form" data-setup-token="{{.SetupToken}}">
           <div class="form-grid">
             <label><span>Display name</span><input name="display_name" autocomplete="name" autofocus></label>
             <label><span>Email</span><input name="email" type="email" autocomplete="email"></label>
           </div>
           <label><span>Username</span><input name="username" autocomplete="username" required maxlength="128"></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="15" maxlength="128"><small>Use 15 to 128 characters. This password is only for the web control plane.</small></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="15" maxlength="128"><small>Use 15 to 128 characters. This password is only for the Regstair web interface.</small></label>
           <label><span>Confirm password</span><input name="confirm_password" type="password" autocomplete="new-password" required minlength="15" maxlength="128"></label>
           <div id="setup-result" class="form-result" role="alert" aria-live="assertive"></div>
           <button type="submit">Create administrator</button>

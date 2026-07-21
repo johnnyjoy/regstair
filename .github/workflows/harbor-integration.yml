@@ -1,0 +1,71 @@
+name: Harbor integration
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harbor-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  harbor:
+    name: Real Harbor credential, pull, and push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_PROJECT_NAME: regstair-harbor-ci
+      HARBOR_COMPOSE_PROJECT_NAME: regstair-harbor-ci-upstream
+      REGSTAIR_HARBOR_RUNTIME: ${{ github.workspace }}/.runtime/harbor-smoke
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Create isolated Harbor passwords
+        shell: bash
+        run: |
+          admin_password="$(openssl rand -hex 24)"
+          user_password="Aa1-$(openssl rand -hex 24)"
+          echo "::add-mask::$admin_password"
+          echo "::add-mask::$user_password"
+          echo "HARBOR_ADMIN_PASSWORD=$admin_password" >> "$GITHUB_ENV"
+          echo "HARBOR_TEST_PASSWORD=$user_password" >> "$GITHUB_ENV"
+
+      - name: Run real Harbor integration
+        run: ./scripts/harbor-smoke.sh
+
+      - name: Show Regstair diagnostics after failure
+        if: failure()
+        run: |
+          docker compose -p "$COMPOSE_PROJECT_NAME" ps -a
+          docker compose -p "$COMPOSE_PROJECT_NAME" logs --no-color regstair
+
+      - name: Show Harbor service state after failure
+        if: failure()
+        shell: bash
+        run: |
+          compose_file="$REGSTAIR_HARBOR_RUNTIME/harbor/docker-compose.yml"
+          if [[ -f "$compose_file" ]]; then
+            docker compose -f "$compose_file" -p "$HARBOR_COMPOSE_PROJECT_NAME" ps -a
+          fi
+
+      - name: Remove integration environment
+        if: always()
+        shell: bash
+        run: |
+          docker compose -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans || true
+          compose_file="$REGSTAIR_HARBOR_RUNTIME/harbor/docker-compose.yml"
+          if [[ -f "$compose_file" ]]; then
+            docker compose -f "$compose_file" -p "$HARBOR_COMPOSE_PROJECT_NAME" down -v --remove-orphans || true
+          fi

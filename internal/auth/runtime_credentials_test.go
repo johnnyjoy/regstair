@@ -35,7 +35,7 @@ func TestRuntimeCredentialSelectorUsesExactLocalUserCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := config.Source{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true}}
+	source := config.Source{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Pull: true, Push: true}}
 	selector := NewRuntimeCredentialSelector(repo, keyring, []config.Source{source}, nil, nil)
 	var gotUsername, gotPassword string
 	selector.factory = func(_ config.Source, username, password string) (registry.Connector, error) {
@@ -73,7 +73,7 @@ func TestRuntimeCredentialSelectorKeepsPublicPullAnonymousWithoutCredential(t *t
 		t.Fatal(err)
 	}
 	base := registry.NewFakeConnector("docker-hub")
-	source := config.Source{ID: "docker-hub", Endpoint: "https://registry-1.docker.io", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true}}
+	source := config.Source{ID: "docker-hub", Endpoint: "https://registry-1.docker.io", Enabled: true, UserCredentials: config.UserCredentials{Pull: true}}
 	selector := NewRuntimeCredentialSelector(repo, nil, []config.Source{source}, map[string]registry.Connector{"docker-hub": base}, nil)
 
 	for _, principal := range []identity.Principal{identity.Anonymous(), {Kind: identity.KindLocalUser, ID: "user-1"}} {
@@ -81,5 +81,92 @@ func TestRuntimeCredentialSelectorKeepsPublicPullAnonymousWithoutCredential(t *t
 		if err != nil || connector != base || credentialSource != "anonymous" {
 			t.Fatalf("ConnectorFor(%#v) = %#v, %q, %v", principal, connector, credentialSource, err)
 		}
+	}
+}
+
+func TestRuntimeCredentialSelectorEnforcesClosedStrategies(t *testing.T) {
+	repo := openAuthRepository(t)
+	user, err := repo.CreateUser(context.Background(), metadata.User{ID: "alice", Username: "alice", PasswordHash: "hash", Access: metadata.UserAccessUser, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := registry.NewFakeConnector("source")
+	for _, tt := range []struct {
+		strategy  string
+		principal identity.Principal
+		source    string
+		wantErr   bool
+	}{
+		{config.AuthStrategyChallenge, identity.Anonymous(), "anonymous", false},
+		{config.AuthStrategyProxy, identity.Anonymous(), "", true},
+		{config.AuthStrategyProxy, identity.Principal{Kind: identity.KindLocalUser, ID: user.ID}, "proxy", false},
+		{config.AuthStrategyCurrentUserRequired, identity.Anonymous(), "", true},
+		{config.AuthStrategyCurrentUserRequired, identity.Principal{Kind: identity.KindLocalUser, ID: user.ID}, "", true},
+	} {
+		source := config.Source{ID: "source", Endpoint: "https://registry.example", Enabled: true, Auth: config.Auth{Strategy: tt.strategy}}
+		selector := NewRuntimeCredentialSelector(repo, nil, []config.Source{source}, map[string]registry.Connector{"source": base}, nil)
+		_, gotSource, err := selector.ConnectorFor(context.Background(), tt.principal, "source", metadata.OperationPull)
+		if (err != nil) != tt.wantErr || gotSource != tt.source {
+			t.Fatalf("strategy %s = source %q error %v", tt.strategy, gotSource, err)
+		}
+	}
+}
+
+func TestRuntimeCredentialSelectorCacheGrantTracksUserAndCredentialExistence(t *testing.T) {
+	repo := openAuthRepository(t)
+	ctx := context.Background()
+	users := []metadata.User{{ID: "alice", Username: "alice", PasswordHash: "hash", Access: metadata.UserAccessUser, Enabled: true}, {ID: "bob", Username: "bob", PasswordHash: "hash", Access: metadata.UserAccessUser, Enabled: true}}
+	for i := range users {
+		created, err := repo.CreateUser(ctx, users[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		users[i] = *created
+	}
+	keyring, err := NewSecretKeyring("test", map[string][]byte{"test": bytes.Repeat([]byte{8}, 32)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func(secret string) {
+		encrypted, err := keyring.Encrypt("credential", "alice", "harbor", []byte(secret))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = repo.SaveRegistryCredential(ctx, metadata.RegistryCredential{ID: "credential", UserID: "alice", SourceID: "harbor", Username: "alice-upstream", EncryptedSecret: encrypted}, metadata.AuditEvent{ActorUserID: "alice", ActorRole: "user", Action: "credential.saved", TargetType: "registry_credential", TargetID: "credential", Outcome: "success"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("first")
+	selector := NewRuntimeCredentialSelector(repo, keyring, []config.Source{{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true}}, nil, nil)
+	binding := metadata.CacheBinding{Source: "harbor", Access: metadata.CacheAccessCurrentUserRequired, UserID: "alice"}
+
+	if source, err := selector.AuthorizeCache(ctx, identity.Principal{Kind: identity.KindLocalUser, ID: "alice"}, binding, metadata.OperationPull); err != nil || source != "current_user" {
+		t.Fatalf("alice authorization = %q, %v", source, err)
+	}
+	for _, principal := range []identity.Principal{identity.Anonymous(), {Kind: identity.KindLocalUser, ID: "bob"}} {
+		if _, err := selector.AuthorizeCache(ctx, principal, binding, metadata.OperationPull); err == nil {
+			t.Fatalf("principal %#v used alice cache grant", principal)
+		}
+	}
+
+	save("replacement")
+	if _, err := selector.AuthorizeCache(ctx, identity.Principal{Kind: identity.KindLocalUser, ID: "alice"}, binding, metadata.OperationPull); err != nil {
+		t.Fatalf("replacement invalidated same-user grant: %v", err)
+	}
+	if err := repo.DeleteRegistryCredential(ctx, "alice", "harbor", metadata.AuditEvent{ActorUserID: "alice", ActorRole: "user", Action: "credential.deleted", TargetType: "registry_credential", TargetID: "credential", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selector.AuthorizeCache(ctx, identity.Principal{Kind: identity.KindLocalUser, ID: "alice"}, binding, metadata.OperationPull); !errors.Is(err, registry.ErrCredentialRequired) {
+		t.Fatalf("removed credential error = %v", err)
+	}
+
+	save("third")
+	users[0].Enabled = false
+	if _, err := repo.UpdateUser(ctx, users[0], users[0].UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selector.AuthorizeCache(ctx, identity.Principal{Kind: identity.KindLocalUser, ID: "alice"}, binding, metadata.OperationPull); !errors.Is(err, registry.ErrAuthorization) {
+		t.Fatalf("disabled user error = %v", err)
 	}
 }

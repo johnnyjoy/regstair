@@ -16,7 +16,7 @@ func NewHarborCredentialVerifier(client *http.Client) *HarborCredentialVerifier 
 }
 
 func (v *HarborCredentialVerifier) Verify(ctx context.Context, request VerificationRequest) error {
-	if request.Endpoint == "" || request.Repository == "" || request.Username == "" || len(request.Secret) == 0 || (!request.Pull && !request.Push) {
+	if request.Endpoint == "" || request.Username == "" || len(request.Secret) == 0 {
 		return ErrVerificationConfig
 	}
 	options := []registry.HTTPOption{registry.WithBasicAuth(request.Username, string(request.Secret)), registry.WithPreemptiveBasicAuth()}
@@ -30,13 +30,13 @@ func (v *HarborCredentialVerifier) Verify(ctx context.Context, request Verificat
 	if err := connector.Health(ctx); err != nil {
 		return mapRegistryVerificationError(err)
 	}
-	if request.Pull {
+	if request.Repository != "" && request.Pull {
 		_, err := connector.ResolveManifest(ctx, request.Repository, "__regstair_credential_check__")
 		if err != nil && !errors.Is(err, registry.ErrNotFound) {
 			return mapRegistryVerificationError(err)
 		}
 	}
-	if request.Push {
+	if request.Repository != "" && request.Push {
 		if err := connector.VerifyPushScope(ctx, request.Repository); err != nil {
 			return mapRegistryVerificationError(err)
 		}

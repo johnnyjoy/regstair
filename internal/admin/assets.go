@@ -7,7 +7,7 @@ import (
 	"html/template"
 )
 
-//go:embed templates/*.html static/*
+//go:embed templates/*.html static/* all:frontend-dist
 var adminAssets embed.FS
 
 var dashboardTemplate = template.Must(template.ParseFS(adminAssets, "templates/dashboard.html"))

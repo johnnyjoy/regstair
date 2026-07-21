@@ -140,6 +140,28 @@ type TagMapping struct {
 	FreshUntil        time.Time `json:"fresh_until"`
 }
 
+type CacheAccess string
+
+const (
+	CacheAccessChallenge           CacheAccess = "challenge"
+	CacheAccessProxy               CacheAccess = "proxy"
+	CacheAccessCurrentUserRequired CacheAccess = "current_user_required"
+)
+
+type CacheBinding struct {
+	LogicalRepository  string      `json:"logical_repository"`
+	Route              string      `json:"route"`
+	Source             string      `json:"source"`
+	PhysicalRepository string      `json:"physical_repository"`
+	ManifestDigest     string      `json:"manifest_digest"`
+	ObjectDigest       string      `json:"object_digest"`
+	ObjectKind         string      `json:"object_kind"`
+	Access             CacheAccess `json:"access"`
+	UserID             string      `json:"user_id,omitempty"`
+	CreatedAt          time.Time   `json:"ctime"`
+	UpdatedAt          time.Time   `json:"mtime"`
+}
+
 type Repository interface {
 	RecordRequestEvent(ctx context.Context, event RequestEvent) error
 	ListRecentRequestEvents(ctx context.Context, limit int) ([]RequestEvent, error)
@@ -152,6 +174,8 @@ type Repository interface {
 	RecordTagMapping(ctx context.Context, mapping TagMapping) error
 	FindTagMapping(ctx context.Context, logicalRepository string, tag string) (*TagMapping, error)
 	ListTagMappings(ctx context.Context) ([]TagMapping, error)
+	RecordCacheBindings(ctx context.Context, bindings []CacheBinding) error
+	ListCacheBindings(ctx context.Context, logicalRepository, route, objectDigest string) ([]CacheBinding, error)
 	CreateUser(ctx context.Context, user User) (*User, error)
 	BootstrapAdmin(ctx context.Context, user User, audit AuditEvent) (*User, error)
 	FindUserByID(ctx context.Context, id string) (*User, error)
@@ -165,6 +189,7 @@ type MemoryRepository struct {
 	events      []RequestEvent
 	provenance  []ProvenanceRecord
 	tags        map[string]TagMapping
+	bindings    map[string]CacheBinding
 	users       map[string]User
 	usernames   map[string]string
 	now         func() time.Time
@@ -174,6 +199,7 @@ type MemoryRepository struct {
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
 		tags:      map[string]TagMapping{},
+		bindings:  map[string]CacheBinding{},
 		users:     map[string]User{},
 		usernames: map[string]string{},
 		now:       func() time.Time { return time.Now().UTC() },

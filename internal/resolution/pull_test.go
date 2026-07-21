@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"regstair/internal/content"
 	"regstair/internal/identity"
@@ -175,6 +177,9 @@ func TestPullResolverServesDigestReferenceFromCache(t *testing.T) {
 	if _, err := store.PutBlob(context.Background(), digest, bytes.NewReader(body)); err != nil {
 		t.Fatalf("PutBlob() error = %v", err)
 	}
+	if err := repo.RecordCacheBindings(context.Background(), []metadata.CacheBinding{{LogicalRepository: "library/nginx", Route: "library", Source: "external-registry", PhysicalRepository: "library/nginx", ManifestDigest: digest, ObjectDigest: digest, ObjectKind: "manifest", Access: metadata.CacheAccessChallenge}}); err != nil {
+		t.Fatal(err)
+	}
 
 	resolver := NewPullResolver(engine, store, repo, map[string]registry.Connector{})
 
@@ -319,6 +324,66 @@ func TestPullResolverDoesNotFallbackAfterCredentialSelectionFailure(t *testing.T
 	}
 }
 
+func TestPullResolverPrivateCacheIsRepositoryAndUserBound(t *testing.T) {
+	engine := newTestPolicyEngine(t, policy.Config{Sources: []policy.Source{{ID: "harbor"}}, Routes: []policy.Route{{Name: "private", Match: "team/**", Precedence: 10, PullSources: []string{"harbor"}}}})
+	store := newTestStore(t)
+	repo := metadata.NewMemoryRepository()
+	manifest := testManifest()
+	if _, err := store.PutBlob(context.Background(), manifest.Digest, bytes.NewReader(manifest.Content)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutBlob(context.Background(), resolverBlobDigest, strings.NewReader("hello regstair")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := repo.RecordTagMapping(context.Background(), metadata.TagMapping{LogicalRepository: "team/private", Tag: "latest", Digest: manifest.Digest, MediaType: manifest.MediaType, Size: manifest.Size, BlobDigests: manifest.BlobDigests, Source: "harbor", Route: "private", ResolvedAt: now, LastValidatedAt: now, FreshUntil: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	bindings := []metadata.CacheBinding{
+		{LogicalRepository: "team/private", Route: "private", Source: "harbor", PhysicalRepository: "team/private", ManifestDigest: manifest.Digest, ObjectDigest: manifest.Digest, ObjectKind: "manifest", Access: metadata.CacheAccessCurrentUserRequired, UserID: "alice"},
+		{LogicalRepository: "team/private", Route: "private", Source: "harbor", PhysicalRepository: "team/private", ManifestDigest: manifest.Digest, ObjectDigest: resolverBlobDigest, ObjectKind: "blob", Access: metadata.CacheAccessCurrentUserRequired, UserID: "alice"},
+	}
+	if err := repo.RecordCacheBindings(context.Background(), bindings); err != nil {
+		t.Fatal(err)
+	}
+	provider := cacheGrantProvider{allowedUser: "alice"}
+	resolver := NewPullResolver(engine, store, repo, nil, WithConnectorProvider(provider))
+
+	for _, principal := range []identity.Principal{identity.Anonymous(), {Kind: identity.KindLocalUser, ID: "bob"}} {
+		if _, err := resolver.Pull(context.Background(), PullRequest{Repository: "team/private", Reference: "latest", Principal: principal}); err == nil {
+			t.Fatalf("principal %#v received private cached manifest", principal)
+		}
+		if _, err := resolver.OpenBlob(context.Background(), BlobRequest{Repository: "team/private", Digest: resolverBlobDigest, Principal: principal}); err == nil {
+			t.Fatalf("principal %#v received private cached blob", principal)
+		}
+	}
+	alice := identity.Principal{Kind: identity.KindLocalUser, ID: "alice"}
+	if result, err := resolver.Pull(context.Background(), PullRequest{Repository: "team/private", Reference: "latest", Principal: alice}); err != nil || result.Source != SourceCache {
+		t.Fatalf("alice cache pull = %#v, %v", result, err)
+	}
+	blob, err := resolver.OpenBlob(context.Background(), BlobRequest{Repository: "team/private", Digest: resolverBlobDigest, Principal: alice})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = blob.Content.Close()
+
+	if _, err := resolver.OpenBlob(context.Background(), BlobRequest{Repository: "team/other", Digest: resolverBlobDigest, Principal: alice}); !errors.Is(err, content.ErrBlobNotFound) {
+		t.Fatalf("cross-repository blob error = %v, want not found", err)
+	}
+}
+
+type cacheGrantProvider struct{ allowedUser string }
+
+func (p cacheGrantProvider) ConnectorFor(context.Context, identity.Principal, string, metadata.Operation) (registry.Connector, string, error) {
+	return nil, "", registry.ErrUnavailable
+}
+func (p cacheGrantProvider) AuthorizeCache(_ context.Context, principal identity.Principal, binding metadata.CacheBinding, _ metadata.Operation) (string, error) {
+	if binding.Access == metadata.CacheAccessCurrentUserRequired && principal.ID == p.allowedUser && binding.UserID == p.allowedUser {
+		return "current_user", nil
+	}
+	return "", registry.ErrAuthorization
+}
+
 type recordingConnectorProvider struct {
 	connectors map[string]registry.Connector
 	failSource string
@@ -333,7 +398,7 @@ func (p *recordingConnectorProvider) ConnectorFor(_ context.Context, _ identity.
 	return p.connectors[source], "anonymous", nil
 }
 
-func (p *recordingConnectorProvider) AuthorizeCache(context.Context, identity.Principal, string, metadata.Operation) (string, error) {
+func (p *recordingConnectorProvider) AuthorizeCache(context.Context, identity.Principal, metadata.CacheBinding, metadata.Operation) (string, error) {
 	return "anonymous", nil
 }
 

@@ -1,7 +1,7 @@
 # Secret-Leak Qualification
 
 Status: passing implementation baseline
-Last run: 2026-07-20
+Last run: 2026-07-21
 
 ## Canary Method
 
@@ -19,6 +19,7 @@ Tests submit unique, recognizable values through each secret-bearing channel and
 | Upstream challenge | Bearer realm controlled by an unapproved host | Attacker-observed request credentials and returned error | `TestHTTPConnectorRejectsUnapprovedBearerRealmWithoutSendingCredentials` |
 | Upload continuation | Absolute upload location controlled by another origin | Attacker-observed request credentials and returned error | `TestHTTPConnectorRejectsCrossOriginUploadLocationWithoutSendingCredentials` |
 | Readiness failure | Closed SQLite repository | Readiness HTTP response | `TestReadinessDetectsClosedMetadataWithoutLeakingInternalError` |
+| Private cache authorization | Anonymous, wrong user, wrong repository, removed credential, and disabled user | OCI response, request metadata, SQLite binding rows | Cache-binding resolver, runtime, gateway, and repository tests |
 
 ## Allowed Diagnostics
 

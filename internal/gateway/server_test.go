@@ -186,11 +186,7 @@ func TestGatewayServesManifestPull(t *testing.T) {
 }
 
 func TestGatewayServesBlobFromContentStore(t *testing.T) {
-	store := newGatewayStore(t)
-	if _, err := store.PutBlob(context.Background(), gatewayBlobDigest, strings.NewReader("hello regstair")); err != nil {
-		t.Fatalf("PutBlob() error = %v", err)
-	}
-	server := newTestServer(t, WithContentStore(store))
+	server := newTestServer(t, WithPuller(&fakePuller{blob: "hello regstair"}))
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+gatewayBlobDigest, nil)
@@ -211,11 +207,7 @@ func TestGatewayServesBlobFromContentStore(t *testing.T) {
 }
 
 func TestGatewayServesBlobHeadWithContentLength(t *testing.T) {
-	store := newGatewayStore(t)
-	if _, err := store.PutBlob(context.Background(), gatewayBlobDigest, strings.NewReader("hello regstair")); err != nil {
-		t.Fatalf("PutBlob() error = %v", err)
-	}
-	server := newTestServer(t, WithContentStore(store))
+	server := newTestServer(t, WithPuller(&fakePuller{blob: "hello regstair"}))
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodHead, "/v2/library/nginx/blobs/"+gatewayBlobDigest, nil)
@@ -229,6 +221,21 @@ func TestGatewayServesBlobHeadWithContentLength(t *testing.T) {
 	}
 	if response.Body.Len() != 0 {
 		t.Fatalf("body length = %d, want 0", response.Body.Len())
+	}
+}
+
+func TestGatewayBlobGetAndHeadCannotBypassRepositoryAuthorization(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			puller := &fakePuller{blobErr: registry.ErrAuthorization}
+			server := newTestServer(t, WithPuller(puller), WithAuthenticator(staticAuthenticator{username: "alice", password: "token", identity: "alice"}))
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(method, "/v2/team/private/blobs/"+gatewayBlobDigest, nil)
+			request.Header.Set("Authorization", "Bearer anonymous")
+			server.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden { t.Fatalf("status = %d, want 403", response.Code) }
+			if puller.blobRequest.Repository != "team/private" || puller.blobRequest.Principal.Kind != identity.KindAnonymous { t.Fatalf("blob authorization request = %#v", puller.blobRequest) }
+		})
 	}
 }
 
@@ -322,9 +329,23 @@ func TestGatewayRejectsUnsupportedRoute(t *testing.T) {
 }
 
 type fakePuller struct {
-	request resolution.PullRequest
-	result  resolution.PullResult
-	err     error
+	request     resolution.PullRequest
+	result      resolution.PullResult
+	err         error
+	blobRequest resolution.BlobRequest
+	blob        string
+	blobErr     error
+}
+
+func (p *fakePuller) OpenBlob(_ context.Context, request resolution.BlobRequest) (resolution.BlobResult, error) {
+	p.blobRequest = request
+	if p.blobErr != nil {
+		return resolution.BlobResult{}, p.blobErr
+	}
+	if p.blob == "" {
+		return resolution.BlobResult{}, content.ErrBlobNotFound
+	}
+	return resolution.BlobResult{Content: io.NopCloser(strings.NewReader(p.blob)), Size: int64(len(p.blob))}, nil
 }
 
 func (p *fakePuller) Pull(ctx context.Context, request resolution.PullRequest) (resolution.PullResult, error) {

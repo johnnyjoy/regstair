@@ -81,7 +81,7 @@ func TestFirstRunSetupReplacesLegacyDashboardAndCreatesAuthenticatedAdmin(t *tes
 
 	page := httptest.NewRecorder()
 	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
-	if page.Code != http.StatusOK || !bytes.Contains(page.Body.Bytes(), []byte("Create the first administrator")) || !bytes.Contains(page.Body.Bytes(), []byte(`minlength="15" maxlength="128"`)) || !bytes.Contains(page.Body.Bytes(), []byte("15 to 128 characters")) || bytes.Contains(page.Body.Bytes(), []byte("Recent requests")) {
+	if page.Code != http.StatusOK || !bytes.Contains(page.Body.Bytes(), []byte(`<div id="root"></div>`)) || !bytes.Contains(page.Body.Bytes(), []byte(`type="module"`)) || bytes.Contains(page.Body.Bytes(), []byte("Recent requests")) {
 		t.Fatalf("setup page = %d %s", page.Code, page.Body.String())
 	}
 
@@ -148,7 +148,7 @@ func testCredentialService(t *testing.T, repo *metadata.SQLiteRepository, verifi
 	if err != nil {
 		t.Fatal(err)
 	}
-	sources := []config.Source{{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true, VerificationRepository: "check/repo"}}}
+	sources := []config.Source{{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Pull: true, Push: true, VerificationRepository: "check/repo"}}}
 	return auth.NewRegistryCredentialService(repo, keyring, verifier, sources)
 }
 
@@ -328,12 +328,12 @@ func TestLastAdministratorRequiresOwnershipTransfer(t *testing.T) {
 	}
 }
 
-func TestApprovedRegistryProjectionIsAuthenticatedAndRouteRelevant(t *testing.T) {
+func TestRegistryProjectionIncludesEveryEnabledConfiguredRegistry(t *testing.T) {
 	fixture := newAuthServerFixture(t)
 	fixture.server.config.Sources = []config.Source{
-		{ID: "harbor", Name: "Harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true, VerificationRepository: "check/repo"}},
-		{ID: "unused", Endpoint: "https://unused.example", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true, VerificationRepository: "check/repo"}},
-		{ID: "disabled", Endpoint: "https://disabled.example", Enabled: false, UserCredentials: config.UserCredentials{Approved: true, Pull: true, VerificationRepository: "check/repo"}},
+		{ID: "harbor", Name: "Harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Pull: true, Push: true, VerificationRepository: "check/repo"}},
+		{ID: "unused", Endpoint: "https://unused.example", Enabled: true, UserCredentials: config.UserCredentials{Pull: true, VerificationRepository: "check/repo"}},
+		{ID: "disabled", Endpoint: "https://disabled.example", Enabled: false, UserCredentials: config.UserCredentials{Pull: true, VerificationRepository: "check/repo"}},
 		{ID: "unapproved", Endpoint: "https://unapproved.example", Enabled: true},
 	}
 	fixture.server.config.Routes = []config.Route{{Name: "team", Pull: config.Pull{Sources: []string{"harbor", "unapproved"}}, Push: config.Push{Destination: "harbor"}}}
@@ -347,11 +347,11 @@ func TestApprovedRegistryProjectionIsAuthenticatedAndRouteRelevant(t *testing.T)
 	if response.Code != http.StatusOK {
 		t.Fatalf("registries = %d %s", response.Code, response.Body.String())
 	}
-	var projection ApprovedRegistriesResponse
+	var projection RegistriesResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Registries) != 1 || projection.Registries[0].ID != "harbor" || !projection.Registries[0].Pull || !projection.Registries[0].Push {
+	if len(projection.Registries) != 3 || projection.Registries[0].ID != "harbor" || !projection.Registries[0].Pull || !projection.Registries[0].Push || projection.Registries[1].ID != "unused" || projection.Registries[1].Pull || projection.Registries[1].Push || projection.Registries[2].ID != "unapproved" || !projection.Registries[2].Pull {
 		t.Fatalf("projection = %#v", projection)
 	}
 }
@@ -455,7 +455,7 @@ func TestLoginRateLimitBlocksExpensiveAuthenticationAndRecovers(t *testing.T) {
 
 func TestBrowserLoginAndNormalUserCredentialDashboard(t *testing.T) {
 	fixture := newAuthServerFixture(t)
-	fixture.server.config.Sources = []config.Source{{ID: "harbor", Name: "Team Harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true, VerificationRepository: "check/repo", Guidance: "Use your Harbor account."}}}
+	fixture.server.config.Sources = []config.Source{{ID: "harbor", Name: "Team Harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Pull: true, Push: true, VerificationRepository: "check/repo", Guidance: "Use your Harbor account."}}}
 	fixture.server.config.Routes = []config.Route{{Name: "team", Pull: config.Pull{Sources: []string{"harbor"}}, Push: config.Push{Destination: "harbor"}}}
 	_, err := fixture.admins.Create(context.Background(), fixture.admin.ID, auth.NewUser{Username: "alice", Password: "another correct battery staple", DisplayName: "Alice Example", Access: metadata.UserAccessUser, Enabled: true})
 	if err != nil {
@@ -464,7 +464,7 @@ func TestBrowserLoginAndNormalUserCredentialDashboard(t *testing.T) {
 
 	loginPage := httptest.NewRecorder()
 	fixture.server.ServeHTTP(loginPage, httptest.NewRequest(http.MethodGet, "/login", nil))
-	if loginPage.Code != http.StatusOK || !bytes.Contains(loginPage.Body.Bytes(), []byte(`id="login-form"`)) {
+	if loginPage.Code != http.StatusOK || !bytes.Contains(loginPage.Body.Bytes(), []byte(`<div id="root"></div>`)) || !bytes.Contains(loginPage.Body.Bytes(), []byte(`type="module"`)) {
 		t.Fatalf("login page = %d %s", loginPage.Code, loginPage.Body.String())
 	}
 	redirect := httptest.NewRecorder()
@@ -478,20 +478,12 @@ func TestBrowserLoginAndNormalUserCredentialDashboard(t *testing.T) {
 	landingRequest := httptest.NewRequest(http.MethodGet, "/", nil)
 	landingRequest.AddCookie(login.cookie)
 	fixture.server.ServeHTTP(landing, landingRequest)
-	if landing.Code != http.StatusSeeOther || landing.Header().Get("Location") != "/account" {
-		t.Fatalf("normal-user landing = %d %q, want redirect to /account", landing.Code, landing.Header().Get("Location"))
+	if landing.Code != http.StatusSeeOther || landing.Header().Get("Location") != "/registry-access" {
+		t.Fatalf("normal-user landing = %d %q, want redirect to /registry-access", landing.Code, landing.Header().Get("Location"))
 	}
-	dashboard := requestJSON(t, fixture.server, http.MethodGet, "/account", nil, login.cookie, "")
-	body := dashboard.Body.String()
-	for _, required := range []string{"Account", "Registry credentials", "Team Harbor", "Use your Harbor account.", "Add credential", `id="token-copy"`, `id="token-retained"`, `id="confirm-dialog"`, `id="mutation-notice"`} {
-		if !strings.Contains(body, required) {
-			t.Fatalf("normal-user dashboard missing %q: %s", required, body)
-		}
-	}
-	for _, forbidden := range []string{"Recent requests", "Cached tag mappings", "SECRET-FIXTURE", "encrypted_secret"} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("normal-user dashboard exposed %q", forbidden)
-		}
+	dashboard := requestJSON(t, fixture.server, http.MethodGet, "/registry-access", nil, login.cookie, "")
+	if dashboard.Code != http.StatusOK || !strings.Contains(dashboard.Body.String(), `<div id="root"></div>`) || strings.Contains(dashboard.Body.String(), "SECRET-FIXTURE") {
+		t.Fatalf("normal-user account application = %d %s", dashboard.Code, dashboard.Body.String())
 	}
 }
 
@@ -504,9 +496,14 @@ func TestAdministratorDashboardRendersUserManagementWithoutSecrets(t *testing.T)
 	login := loginHTTP(t, fixture.server, "admin", "correct horse battery staple")
 	dashboard := requestJSON(t, fixture.server, http.MethodGet, "/admin/users", nil, login.cookie, "")
 	body := dashboard.Body.String()
-	for _, required := range []string{`id="logout"`, `id="users"`, `id="user-create-dialog"`, `id="user-reset-dialog"`, "Alice Example", "alice@example.test", `data-mtime="`, `data-current-access="`, "Administrator continuity", "Review changes"} {
+	if !strings.Contains(body, `<div id="root"></div>`) || !strings.Contains(body, `type="module"`) {
+		t.Fatalf("users route did not serve React application: %s", body)
+	}
+	users := requestJSON(t, fixture.server, http.MethodGet, "/admin/api/users", nil, login.cookie, "")
+	body = users.Body.String()
+	for _, required := range []string{"Alice Example", "alice@example.test", `"mtime"`, `"access":"user"`} {
 		if !strings.Contains(body, required) {
-			t.Fatalf("admin dashboard missing %q", required)
+			t.Fatalf("users API missing %q", required)
 		}
 	}
 	for _, forbidden := range []string{"another correct battery staple", "correct horse battery staple", "password_hash", "token_hash"} {

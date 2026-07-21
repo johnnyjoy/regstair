@@ -1,61 +1,42 @@
 version: 1
 
 sources:
-  - id: internal-curated
-    name: Internal Curated Registry
-    endpoint: http://internal-registry:5000
-    type: internal
-    enabled: true
-
-  - id: external-registry
-    name: External Registry Stand-In
-    endpoint: http://external-registry:5000
+  - id: docker-hub
+    name: Docker Hub
+    endpoint: https://registry-1.docker.io
     type: external
     enabled: true
+    auth:
+      strategy: challenge
+      token_hosts:
+        - auth.docker.io
+    user_credentials:
+      pull: true
+      push: true
+      guidance: Use your Docker Hub username and a personal access token.
 
-  - id: harbor-team-a
-    name: Team A Destination Registry
-    endpoint: http://destination-registry:5000
-    type: internal
+  - id: github-container-registry
+    name: GitHub Container Registry
+    endpoint: https://ghcr.io
+    type: external
     enabled: true
+    auth:
+      strategy: challenge
+      token_hosts:
+        - ghcr.io
+    user_credentials:
+      pull: true
+      push: true
+      guidance: Use your GitHub username and a personal access token with package permissions.
 
 routes:
-  - name: curated-library
+  - name: docker-hub-library
     match: library/**
     precedence: 10
     pull:
       sources:
-        - internal-curated
-        - external-registry
-      authoritative: internal-curated
-      external_fallback: true
-    push:
-      destination: internal-curated
-    rewrite:
-      strip_prefix: library/
-      add_prefix: library/
-
-  - name: protected-platform
-    match: platform/**
-    precedence: 20
-    pull:
-      sources:
-        - internal-curated
-      authoritative: internal-curated
+        - docker-hub
+      authoritative: docker-hub
       external_fallback: false
     push:
-      destination: internal-curated
-
-  - name: team-a-publish
-    match: team-a/**
-    precedence: 30
-    pull:
-      sources:
-        - harbor-team-a
-      authoritative: harbor-team-a
-      external_fallback: false
-    push:
-      destination: harbor-team-a
-    rewrite:
-      strip_prefix: team-a/
-      add_prefix: production-team-a/
+      destination: docker-hub

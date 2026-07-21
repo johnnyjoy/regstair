@@ -1,7 +1,7 @@
 # Regstair Next-Level Threat Model
 
 Status: release-qualified implementation baseline
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 ## Protected Assets
 
@@ -55,7 +55,8 @@ Regstair authenticates/authorizes the local user, matches the global route, choo
 | Secret leakage | Structured allowlisted errors/audit details, redaction, fixture scans across all outputs |
 | Malicious upstream challenge or redirect | Configured-host allowlist, HTTPS policy, no client Authorization forwarding, redirect host checks |
 | Dependency-confusion fallback | Treat 401/403 distinctly, honor namespace authority, never retry unrelated credentials |
-| Cached private-content exposure | Authorize logical reference before cache serve; cache presence never grants access |
+| Cached private-content exposure | Exact repository/route/object binding; repository-aware manifest and blob reads; cache presence never grants access |
+| Stale private-cache replay | Recheck enabled user and current source credential on every user-bound cache read; do not bind to token or credential version |
 | Disabled user retaining access | Session and token revocation plus enabled check on every authentication |
 | Bootstrap takeover | Loopback bind by default, explicit setup-only mode, ephemeral setup token, same-origin browser submission, one-shot transaction, and setup before network exposure |
 | Concurrent credential replacement | SQLite transaction, unique user/source constraint, atomic audit coupling |
@@ -83,6 +84,7 @@ Regstair authenticates/authorizes the local user, matches the global route, choo
 | Malicious Bearer realm and upload redirect cannot receive credentials | Registry HTTP hostile realm/location tests |
 | Secret-free database, API, audit, logs, panic, and upstream errors | `docs/SECRET_LEAK_QUALIFICATION.md` and executable canary tests |
 | Missing/wrong keys, rotation, backup, and restore | `docs/BACKUP_KEY_LIFECYCLE.md` and CLI/readiness tests |
+| Repository confusion, cross-user replay, removal, disablement, and replacement | Resolver/runtime/gateway cache-binding tests and real Harbor outage replay |
 
 ## Explicit Non-Guarantees
 

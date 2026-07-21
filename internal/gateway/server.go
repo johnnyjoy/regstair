@@ -28,6 +28,10 @@ type Puller interface {
 	Pull(ctx context.Context, request resolution.PullRequest) (resolution.PullResult, error)
 }
 
+type BlobPuller interface {
+	OpenBlob(ctx context.Context, request resolution.BlobRequest) (resolution.BlobResult, error)
+}
+
 type Pusher interface {
 	Push(ctx context.Context, request resolution.PushRequest) (resolution.PushResult, error)
 }
@@ -41,6 +45,7 @@ type Option func(*Server)
 
 type Server struct {
 	puller        Puller
+	blobPuller    BlobPuller
 	pusher        Pusher
 	store         content.Store
 	authenticator Authenticator
@@ -69,6 +74,9 @@ func NewServer(options ...Option) (*Server, error) {
 func WithPuller(puller Puller) Option {
 	return func(server *Server) {
 		server.puller = puller
+		if blobPuller, ok := puller.(BlobPuller); ok {
+			server.blobPuller = blobPuller
+		}
 	}
 }
 
@@ -333,28 +341,31 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request, repository s
 		return
 	}
 
-	rc, err := s.store.OpenBlob(r.Context(), digest)
+	if s.blobPuller == nil {
+		writeOCIError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "repository-aware blob resolver is not configured")
+		return
+	}
+	result, err := s.blobPuller.OpenBlob(r.Context(), resolution.BlobRequest{Repository: repository, Digest: digest, Principal: requestPrincipal(r.Context())})
 	if errors.Is(err, content.ErrBlobNotFound) {
 		writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob not found")
 		return
 	}
 	if err != nil {
-		writeOCIError(w, http.StatusInternalServerError, "UNKNOWN", err.Error())
+		writePullError(w, err)
 		return
 	}
-	defer rc.Close()
+	defer result.Content.Close()
 
 	w.Header().Set("Docker-Content-Digest", digest)
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if size, ok := s.blobSize(r.Context(), digest); ok {
-		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	if result.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(result.Size, 10))
 	}
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	_, _ = io.Copy(w, rc)
-	_ = repository
+	_, _ = io.Copy(w, result.Content)
 }
 
 func (s *Server) blobSize(ctx context.Context, digest string) (int64, bool) {

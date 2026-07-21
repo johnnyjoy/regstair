@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"regstair/internal/admin"
@@ -33,6 +36,11 @@ type Options struct {
 	StubFixtures      bool
 	CredentialKeyID   string
 	CredentialKeyFile string
+	HTTPSListenAddr   string
+	TLSCertFile       string
+	TLSKeyFile        string
+	TLSCAFile         string
+	HTTPSRedirectPort string
 }
 
 type App struct {
@@ -43,6 +51,11 @@ type App struct {
 	metadataPath      string
 	closeMetadata     func() error
 	credentialKeyring *auth.SecretKeyring
+	httpsListenAddr   string
+	tlsCertFile       string
+	tlsKeyFile        string
+	tlsCAFile         string
+	httpsRedirectPort string
 }
 
 func New(options Options) (*App, error) {
@@ -108,11 +121,6 @@ func New(options Options) (*App, error) {
 		registryCredentialService = auth.NewRegistryCredentialService(metadataRepo, keyring, auth.NewHarborCredentialVerifier(nil), fileConfig.Sources)
 		credentialKeyring = keyring
 	} else {
-		for _, source := range fileConfig.Sources {
-			if source.Enabled && source.UserCredentials.Approved {
-				return nil, fmt.Errorf("source %q uses current-user authentication but no credential encryption key is configured", source.ID)
-			}
-		}
 		slog.Warn("per-user registry credential APIs unavailable; no credential encryption key file configured")
 	}
 	connectors, err := buildConnectors(*fileConfig, options)
@@ -148,13 +156,20 @@ func New(options Options) (*App, error) {
 		Connectors:   connectors,
 		LoginLimiter: loginLimiter,
 	})
-	app := &App{listenAddr: options.ListenAddr, handler: security.RecoverHTTP(mux, nil), store: store, repo: metadataRepo, metadataPath: metadataPath(options), closeMetadata: metadataRepo.Close, credentialKeyring: credentialKeyring}
+	if options.HTTPSListenAddr != "" && (options.TLSCertFile == "" || options.TLSKeyFile == "" || options.TLSCAFile == "") {
+		_ = metadataRepo.Close()
+		return nil, fmt.Errorf("HTTPS requires TLS certificate, key, and CA files")
+	}
+	app := &App{listenAddr: options.ListenAddr, httpsListenAddr: options.HTTPSListenAddr, httpsRedirectPort: options.HTTPSRedirectPort, tlsCertFile: options.TLSCertFile, tlsKeyFile: options.TLSKeyFile, tlsCAFile: options.TLSCAFile, handler: security.RecoverHTTP(mux, nil), store: store, repo: metadataRepo, metadataPath: metadataPath(options), closeMetadata: metadataRepo.Close, credentialKeyring: credentialKeyring}
 	mux.Handle("/v2/", gatewayServer)
 	mux.HandleFunc("/auth/token", gatewayServer.ServeTokenHTTP)
 	mux.Handle("/admin/api/", adminServer)
 	mux.Handle("/admin/", adminServer)
 	mux.HandleFunc("/healthz", app.handleHealth)
 	mux.HandleFunc("/readyz", app.handleReady)
+	if app.tlsCAFile != "" {
+		mux.HandleFunc("/regstair-ca.crt", app.handleCACertificate)
+	}
 	mux.Handle("/", adminServer)
 
 	return app, nil
@@ -171,9 +186,66 @@ func (a *App) ListenAddr() string {
 func (a *App) Server() *http.Server {
 	return &http.Server{
 		Addr:              a.listenAddr,
-		Handler:           a.handler,
+		Handler:           a.httpHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+}
+
+func (a *App) HTTPSServer() *http.Server {
+	return &http.Server{Addr: a.httpsListenAddr, Handler: a.handler, ReadHeaderTimeout: 5 * time.Second}
+}
+
+func (a *App) HTTPSListenAddr() string    { return a.httpsListenAddr }
+func (a *App) TLSFiles() (string, string) { return a.tlsCertFile, a.tlsKeyFile }
+
+func (a *App) httpHandler() http.Handler {
+	if a.httpsListenAddr == "" {
+		return a.handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/regstair-ca.crt" {
+			a.handler.ServeHTTP(w, r)
+			return
+		}
+		target := *r.URL
+		target.Scheme = "https"
+		target.Host = redirectHost(r.Host, a.httpsListenAddr, a.httpsRedirectPort)
+		http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
+	})
+}
+
+func redirectHost(requestHost, listenAddr, publicPort string) string {
+	host := requestHost
+	if parsed, _, err := net.SplitHostPort(requestHost); err == nil {
+		host = parsed
+	} else if strings.HasPrefix(requestHost, "[") && strings.HasSuffix(requestHost, "]") {
+		host = strings.Trim(requestHost, "[]")
+	}
+	_, port, err := net.SplitHostPort(listenAddr)
+	if publicPort != "" {
+		port = publicPort
+		err = nil
+	}
+	if err != nil || port == "" || port == "443" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func (a *App) handleCACertificate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	contents, err := os.ReadFile(a.tlsCAFile)
+	if err != nil {
+		http.Error(w, "CA certificate unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+	w.Header().Set("Content-Disposition", `attachment; filename="regstair-ca.crt"`)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, _ = w.Write(contents)
 }
 
 func (a *App) Close() error {

@@ -7,6 +7,8 @@ harbor_version="${HARBOR_VERSION:-2.15.0}"
 project="${COMPOSE_PROJECT_NAME:-regstair-harbor-smoke}"
 harbor_project="${HARBOR_COMPOSE_PROJECT_NAME:-regstair-harbor}"
 admin_password="${HARBOR_ADMIN_PASSWORD:-regstair-harbor-admin}"
+harbor_test_username="${HARBOR_TEST_USERNAME:-regstairtestuser}"
+harbor_test_password="${HARBOR_TEST_PASSWORD:-Regstair-Harbor-Test-42}"
 client_username="smoke-admin"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_root="${REGSTAIR_HARBOR_RUNTIME:-$repo_root/.runtime/harbor-smoke}"
@@ -25,9 +27,10 @@ harbor_port="${HARBOR_PORT:-$(free_port)}"
 regstair_port="${REGSTAIR_PORT:-$(free_port)}"
 harbor_url="http://127.0.0.1:$harbor_port"
 regstair_url="http://127.0.0.1:$regstair_port"
-config_path="$runtime_root/regstair-harbor.yaml"
-robot_file="$runtime_root/robot.json"
-credential_key_file="$runtime_root/regstair-credential-key"
+run_root="$runtime_root/runs/$harbor_port"
+config_path="$run_root/regstair-harbor.yaml"
+robot_file="$run_root/robot.json"
+credential_key_file="$run_root/regstair-credential-key"
 credential_key_id="harbor-smoke"
 credential_key_mount="$credential_key_file"
 
@@ -38,7 +41,7 @@ for command in docker curl jq sha256sum awk python3 tar sed go; do
   fi
 done
 
-mkdir -p "$runtime_root" "$runtime_root/data" "$runtime_root/log"
+mkdir -p "$runtime_root" "$run_root/data" "$run_root/log"
 
 wait_http() {
   local url="$1" name="$2"
@@ -77,8 +80,8 @@ configure_harbor() {
     -v hostname="host.docker.internal" \
     -v port="$harbor_port" \
     -v password="$admin_password" \
-    -v data="$runtime_root/data" \
-    -v logs="$runtime_root/log" '
+    -v data="$run_root/data" \
+    -v logs="$run_root/log" '
       /^https:/ { skip_https=1; next }
       skip_https && /^[^[:space:]#]/ { skip_https=0 }
       skip_https { next }
@@ -126,15 +129,40 @@ put_harbor_manifest() {
 }
 
 regstair_upload_blob() {
-  local repository="$1" blob_digest="$2" body="$3"
+  local repository="$1" blob_digest="$2" body="$3" token="$4"
   local location upload_url
-  location="$(curl -fsS -u "$client_username:$client_password" -D - -o /dev/null \
+  location="$(curl -fsS -H "Authorization: Bearer $token" -D - -o /dev/null \
     -X POST "$regstair_url/v2/$repository/blobs/uploads/" |
     awk 'tolower($1) == "location:" {print $2}' | tr -d '\r' | tail -n 1)"
   upload_url="$regstair_url$location"
   [[ "$upload_url" == *\?* ]] && upload_url="$upload_url&digest=$blob_digest" || upload_url="$upload_url?digest=$blob_digest"
-  printf '%s' "$body" | curl -fsS -u "$client_username:$client_password" -o /dev/null \
+  printf '%s' "$body" | curl -fsS -H "Authorization: Bearer $token" -o /dev/null \
     -X PUT -H 'Content-Type: application/octet-stream' --data-binary @- "$upload_url"
+}
+
+regstair_token() {
+  local repository="$1" actions="$2"
+  curl -fsS -u "$client_username:$client_password" --get \
+    --data-urlencode 'service=regstair' \
+    --data-urlencode "scope=repository:$repository:$actions" \
+    "$regstair_url/auth/token" | jq -er '.token // .access_token'
+}
+
+regstair_anonymous_token() {
+  local repository="$1" actions="$2"
+  curl -fsS --get \
+    --data-urlencode 'service=regstair' \
+    --data-urlencode "scope=repository:$repository:$actions" \
+    "$regstair_url/auth/token" | jq -er '.token // .access_token'
+}
+
+stop_harbor() {
+  (cd "$installer_dir" && docker compose -p "$harbor_project" stop >/dev/null)
+}
+
+start_harbor() {
+  (cd "$installer_dir" && docker compose -p "$harbor_project" up -d >/dev/null)
+  wait_http "$harbor_url/api/v2.0/ping" "Harbor API"
 }
 
 echo "Preparing Harbor v$harbor_version..."
@@ -160,6 +188,25 @@ if [[ "$project_status" != "201" && "$project_status" != "409" ]]; then
   exit 1
 fi
 
+echo "Creating an ordinary Harbor user with Developer access to the private project..."
+user_status="$(curl -sS -u "admin:$admin_password" -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg username "$harbor_test_username" --arg password "$harbor_test_password" '{username:$username,password:$password,email:($username+"@example.test"),realname:"Regstair integration user"}')" \
+  "$harbor_url/api/v2.0/users")"
+if [[ "$user_status" != "201" && "$user_status" != "409" ]]; then
+  echo "Harbor user creation returned status $user_status" >&2
+  exit 1
+fi
+
+member_status="$(curl -sS -u "admin:$admin_password" -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg username "$harbor_test_username" '{role_id:2,member_user:{username:$username}}')" \
+  "$harbor_url/api/v2.0/projects/regstair/members")"
+if [[ "$member_status" != "201" && "$member_status" != "409" ]]; then
+  echo "Harbor project membership returned status $member_status" >&2
+  exit 1
+fi
+
 robot_payload="$(jq -nc --arg name "gateway-$harbor_port" '{
   name:$name,
   description:"Regstair Harbor integration fixture",
@@ -182,13 +229,13 @@ robot_name="$(jq -er '.name' "$robot_file")"
 robot_secret="$(jq -er '.secret' "$robot_file")"
 
 verification_repo_before="$(curl -fsS -u "admin:$admin_password" "$harbor_url/api/v2.0/projects/regstair/repositories?page_size=100" | jq '[.[].name] | index("regstair/credential-check") != null')"
-verification_upload_root="$runtime_root/data/registry/docker/registry/v2/repositories/regstair/credential-check/_uploads"
+verification_upload_root="$run_root/data/registry/docker/registry/v2/repositories/regstair/credential-check/_uploads"
 verification_uploads_before="$(count_uploads "$verification_upload_root")"
 echo "Verifying real Harbor credential classification and non-mutating push-scope grant..."
 REGSTAIR_HARBOR_VERIFY_TEST=1 \
 REGSTAIR_HARBOR_ENDPOINT="$harbor_url" \
-REGSTAIR_HARBOR_USERNAME="$robot_name" \
-REGSTAIR_HARBOR_SECRET="$robot_secret" \
+REGSTAIR_HARBOR_USERNAME="$harbor_test_username" \
+REGSTAIR_HARBOR_SECRET="$harbor_test_password" \
 GOCACHE="${GOCACHE:-/tmp/regstair-go-cache}" \
   go test ./internal/auth -run TestHarborCredentialVerifierIntegration -v
 verification_repo_after="$(curl -fsS -u "admin:$admin_password" "$harbor_url/api/v2.0/projects/regstair/repositories?page_size=100" | jq '[.[].name] | index("regstair/credential-check") != null')"
@@ -212,7 +259,6 @@ sources:
     enabled: true
     auth:
     user_credentials:
-      approved: true
       pull: true
       push: true
       verification_repository: regstair/credential-check
@@ -248,33 +294,75 @@ upload_blob regstair/base "$config_digest" "$config_body" "$seed_token"
 upload_blob regstair/base "$layer_digest" "$layer_body" "$seed_token"
 put_harbor_manifest regstair/base 1.0 "$manifest" "$seed_token"
 
-echo "Starting Regstair with the Harbor robot credential..."
+echo "Starting Regstair for per-user Harbor credential testing..."
 REGSTAIR_CONFIG="$config_path" \
 REGSTAIR_PORT="$regstair_port" \
 REGSTAIR_CREDENTIAL_KEY_ID="$credential_key_id" \
 REGSTAIR_CREDENTIAL_KEY_FILE="$credential_key_mount" \
+REGSTAIR_HTTPS_LISTEN= \
+REGSTAIR_HTTPS_PORT=0 \
   docker compose -p "$project" up -d --build regstair
 wait_http "$regstair_url/healthz" "Regstair"
 
 echo "Bootstrapping the local administrator and saving that user's verified Harbor credential..."
 bootstrap_admin_session "$regstair_url" "$client_username" "smoke administrator password"
 admin_post "$regstair_url" "/admin/api/account/registry-credentials/harbor-team-a/verify-and-save" \
-  "$(jq -nc --arg username "$robot_name" --arg secret "$robot_secret" '{username:$username,secret:$secret}')" |
-  jq -e '.source_id == "harbor-team-a" and .username != "" and (.secret | not)' >/dev/null
+  "$(jq -nc --arg username "$harbor_test_username" --arg secret "$harbor_test_password" '{username:$username,secret:$secret}')" |
+  jq -e --arg username "$harbor_test_username" '.source_id == "harbor-team-a" and .username == $username and (.secret | not)' >/dev/null
 client_password="$(admin_post "$regstair_url" "/admin/api/account/docker-tokens" \
   '{"label":"harbor-smoke","expires_in_days":1}' | jq -er '.secret')"
 
 echo "Verifying Harbor pull through Regstair..."
-curl -fsS -u "$client_username:$client_password" \
+client_pull_token="$(regstair_token team-a/base pull)"
+curl -fsS -H "Authorization: Bearer $client_pull_token" \
   -H 'Accept: application/vnd.oci.image.manifest.v1+json' -o /dev/null \
   "$regstair_url/v2/team-a/base/manifests/1.0"
 
+echo "Stopping Harbor and proving authorization-safe private cache replay..."
+stop_harbor
+curl -fsS -H "Authorization: Bearer $client_pull_token" \
+  -H 'Accept: application/vnd.oci.image.manifest.v1+json' -o /dev/null \
+  "$regstair_url/v2/team-a/base/manifests/1.0"
+for cached_digest in "$config_digest" "$layer_digest"; do
+  curl -fsS -H "Authorization: Bearer $client_pull_token" -o /dev/null \
+    "$regstair_url/v2/team-a/base/blobs/$cached_digest"
+done
+anonymous_pull_token="$(regstair_anonymous_token team-a/base pull)"
+anonymous_status="$(curl -sS -H "Authorization: Bearer $anonymous_pull_token" -o /dev/null -w '%{http_code}' "$regstair_url/v2/team-a/base/manifests/1.0")"
+if [[ "$anonymous_status" != "401" && "$anonymous_status" != "403" ]]; then
+  echo "anonymous private cache replay returned $anonymous_status, want 401 or 403" >&2
+  exit 1
+fi
+
+curl -fsS -X DELETE \
+  -H "Cookie: $ADMIN_COOKIE_HEADER" \
+  -H "X-CSRF-Token: $ADMIN_CSRF_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary '{"confirm":true}' \
+  "$regstair_url/admin/api/account/registry-credentials/harbor-team-a" >/dev/null
+removed_status="$(curl -sS -H "Authorization: Bearer $client_pull_token" -o /dev/null -w '%{http_code}' "$regstair_url/v2/team-a/base/manifests/1.0")"
+if [[ "$removed_status" != "401" && "$removed_status" != "403" ]]; then
+  echo "removed credential private cache replay returned $removed_status, want 401 or 403" >&2
+  exit 1
+fi
+
+echo "Restarting Harbor, replacing the credential, and proving the same-user grant remains valid..."
+start_harbor
+admin_post "$regstair_url" "/admin/api/account/registry-credentials/harbor-team-a/verify-and-save" \
+  "$(jq -nc --arg username "$harbor_test_username" --arg secret "$harbor_test_password" '{username:$username,secret:$secret}')" >/dev/null
+stop_harbor
+curl -fsS -H "Authorization: Bearer $client_pull_token" \
+  -H 'Accept: application/vnd.oci.image.manifest.v1+json' -o /dev/null \
+  "$regstair_url/v2/team-a/base/manifests/1.0"
+start_harbor
+
 echo "Verifying Harbor push through Regstair..."
+client_push_token="$(regstair_token team-a/published pull,push)"
 push_body='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{"source":"regstair"}}'
 push_digest="$(digest "$push_body")"
-regstair_upload_blob team-a/published "$push_digest" "$push_body"
+regstair_upload_blob team-a/published "$push_digest" "$push_body" "$client_push_token"
 push_manifest="$(jq -nc --arg digest "$push_digest" --argjson size "${#push_body}" '{schemaVersion:2,mediaType:"application/vnd.oci.image.manifest.v1+json",config:{mediaType:"application/vnd.oci.image.config.v1+json",digest:$digest,size:$size},layers:[]}')"
-printf '%s' "$push_manifest" | curl -fsS -u "$client_username:$client_password" -o /dev/null \
+printf '%s' "$push_manifest" | curl -fsS -H "Authorization: Bearer $client_push_token" -o /dev/null \
   -X PUT -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' --data-binary @- \
   "$regstair_url/v2/team-a/published/manifests/1.0"
 

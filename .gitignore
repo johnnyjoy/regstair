@@ -1,2 +1,8 @@
 /regstair
 .runtime/
+node_modules/
+internal/admin/frontend-dist/
+!internal/admin/frontend-dist/
+internal/admin/frontend-dist/*
+!internal/admin/frontend-dist/.gitkeep
+*.tsbuildinfo

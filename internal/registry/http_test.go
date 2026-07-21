@@ -246,6 +246,34 @@ func TestHTTPConnectorExchangesBearerChallengeAndCachesToken(t *testing.T) {
 	}
 }
 
+func TestHTTPConnectorExchangesAnonymousBearerChallenge(t *testing.T) {
+	var tokenAuthorization string
+	connector, err := NewHTTPConnector("docker-hub", "https://registry.test", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host == "auth.test" {
+				tokenAuthorization = r.Header.Get("Authorization")
+				return response(http.StatusOK, []byte(`{"token":"anonymous-token","expires_in":300}`), nil), nil
+			}
+			if r.Header.Get("Authorization") == "Bearer anonymous-token" {
+				return response(http.StatusOK, []byte(`{"schemaVersion":2}`), map[string]string{"Content-Type": "application/vnd.oci.image.manifest.v1+json"}), nil
+			}
+			return response(http.StatusUnauthorized, nil, map[string]string{
+				"WWW-Authenticate": `Bearer realm="https://auth.test/token",service="registry.test",scope="repository:library/alpine:pull"`,
+			}), nil
+		}),
+	}, WithAllowedTokenHosts("auth.test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := connector.ResolveManifest(context.Background(), "library/alpine", "latest"); err != nil {
+		t.Fatalf("ResolveManifest() error = %v", err)
+	}
+	if tokenAuthorization != "" {
+		t.Fatalf("anonymous token request authorization = %q, want empty", tokenAuthorization)
+	}
+}
+
 func TestHTTPConnectorRejectsUnapprovedBearerRealmWithoutSendingCredentials(t *testing.T) {
 	credentialSent := false
 	connector, err := NewHTTPConnector("registry", "https://registry.test", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

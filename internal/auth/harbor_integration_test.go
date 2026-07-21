@@ -39,7 +39,7 @@ func TestHarborCredentialVerifierIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := config.Source{ID: "harbor", Endpoint: endpoint, Enabled: true, Auth: config.Auth{Strategy: config.AuthStrategyChallenge}, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true, VerificationRepository: "regstair/credential-check", AllowInsecure: true}}
+	source := config.Source{ID: "harbor", Endpoint: endpoint, Enabled: true, Auth: config.Auth{Strategy: config.AuthStrategyChallenge}, UserCredentials: config.UserCredentials{Pull: true, Push: true, VerificationRepository: "regstair/credential-check", AllowInsecure: true}}
 	service := NewRegistryCredentialService(repo, keyring, verifier, []config.Source{source})
 	view, err := service.VerifyAndSave(context.Background(), user.ID, "harbor", username, []byte(secret))
 	if err != nil {

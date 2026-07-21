@@ -10,7 +10,7 @@ external_url="${EXTERNAL_REGISTRY_URL:-http://127.0.0.1:5002}"
 destination_url="${DESTINATION_REGISTRY_URL:-http://127.0.0.1:5003}"
 
 cleanup() {
-  docker compose -p "$project" up -d external-registry >/dev/null 2>&1 || true
+  docker compose -p "$project" --profile fixture up -d external-registry >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -163,7 +163,7 @@ manifest_accept='Accept: application/vnd.oci.image.manifest.v1+json, application
 
 echo "Starting Compose environment..."
 docker compose -p "$project" down -v >/dev/null 2>&1 || true
-docker compose -p "$project" up -d --build
+REGSTAIR_CONFIG=./config/regstair.fixture.yaml REGSTAIR_HTTPS_LISTEN= REGSTAIR_HTTPS_PORT=0 docker compose -p "$project" --profile fixture up -d --build
 
 wait_http "$internal_url/v2/" "internal registry"
 wait_http "$external_url/v2/" "external registry"
@@ -233,7 +233,7 @@ assert_http_status "200" "$regstair_url/v2/library/alpine/manifests/edge"
 assert_http_status "200" "$regstair_url/v2/library/alpine/blobs/$layer_digest"
 
 echo "Stopping external registry and replaying pull from Regstair cache..."
-docker compose -p "$project" stop external-registry >/dev/null
+docker compose -p "$project" --profile fixture stop external-registry >/dev/null
 assert_http_status "200" "$regstair_url/v2/library/nginx/manifests/1.27"
 assert_http_status "200" "$regstair_url/v2/library/nginx/blobs/$layer_digest"
 
@@ -241,7 +241,7 @@ echo "Verifying protected namespace blocks external fallback..."
 assert_http_status "404" "$regstair_url/v2/platform/api/manifests/1.0.0"
 
 echo "Restarting external registry for cleanup-friendly final state..."
-docker compose -p "$project" up -d external-registry >/dev/null
+docker compose -p "$project" --profile fixture up -d external-registry >/dev/null
 wait_http "$external_url/v2/" "external registry"
 
 echo "Creating the local administrator and Docker token for the push phase..."

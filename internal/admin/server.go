@@ -71,10 +71,10 @@ type RoutesResponse struct {
 	Routes []config.Route `json:"routes"`
 }
 
-type ApprovedRegistriesResponse struct {
-	Registries []ApprovedRegistryView `json:"registries"`
+type RegistriesResponse struct {
+	Registries []RegistryView `json:"registries"`
 }
-type ApprovedRegistryView struct {
+type RegistryView struct {
 	ID                     string   `json:"id"`
 	Name                   string   `json:"name"`
 	Endpoint               string   `json:"endpoint"`
@@ -194,8 +194,28 @@ type auditRow struct {
 	Detail      string
 }
 
+type AuditResponse struct {
+	Events  []AuditEventView    `json:"events"`
+	Actions []auditActionOption `json:"actions"`
+}
+
+type AuditEventView struct {
+	ID            int64     `json:"id"`
+	Timestamp     time.Time `json:"timestamp"`
+	Action        string    `json:"action"`
+	ActionLabel   string    `json:"action_label"`
+	Outcome       string    `json:"outcome"`
+	Actor         string    `json:"actor"`
+	Target        string    `json:"target"`
+	Detail        string    `json:"detail,omitempty"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
+}
+
 type auditFilterView struct{ Action, Outcome, Actor, Target, Correlation string }
-type auditActionOption struct{ Action, Label string }
+type auditActionOption struct {
+	Action string `json:"action"`
+	Label  string `json:"label"`
+}
 
 type requestFilterChip struct{ Label, URL string }
 
@@ -222,7 +242,7 @@ type dashboardAttentionItem struct {
 }
 
 type credentialRow struct {
-	Registry   ApprovedRegistryView
+	Registry   RegistryView
 	Credential *auth.RegistryCredentialView
 }
 
@@ -296,8 +316,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = r.WithContext(withCurrentUser(r.Context(), user))
-		if isApplicationPagePath(r.URL.Path) && user.Access != metadata.UserAccessAdmin && r.URL.Path != "/account" {
-			http.Redirect(w, r, "/account", http.StatusSeeOther)
+		if isApplicationPagePath(r.URL.Path) && user.Access != metadata.UserAccessAdmin && r.URL.Path != "/account" && r.URL.Path != "/registry-access" {
+			http.Redirect(w, r, "/registry-access", http.StatusSeeOther)
 			return
 		}
 		if adminOnlyPath(r.URL.Path) && user.Access != metadata.UserAccessAdmin {
@@ -326,17 +346,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/requests/") {
-		s.handleRequestDetailPage(w, r)
+		s.handleApplication(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/assets/") {
+		s.handleApplicationAsset(w, r)
+		return
+	}
+	if r.URL.Path == "/regstair-logo.png" {
+		s.handleApplicationAsset(w, r)
 		return
 	}
 
 	switch r.URL.Path {
-	case "/", "/requests", "/routes", "/sources", "/cache", "/account", "/admin/users", "/admin/audit":
-		s.handleDashboard(w, r)
-	case "/admin/static/admin.css":
-		s.handleStatic(w, r, "static/admin.css", "text/css; charset=utf-8")
-	case "/admin/static/admin.js":
-		s.handleStatic(w, r, "static/admin.js", "text/javascript; charset=utf-8")
+	case "/":
+		s.handleApplication(w, r)
+	case "/requests", "/routes", "/sources", "/cache", "/account", "/registry-access", "/admin/users", "/admin/audit":
+		s.handleApplication(w, r)
 	case "/admin/api/health":
 		if !readMethod(w, r) {
 			return
@@ -354,6 +380,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRegistryCredentials(w, r)
 	case "/admin/api/users":
 		s.handleUsers(w, r)
+	case "/admin/api/audit":
+		s.handleAudit(w, r)
 	case "/admin/api/sources":
 		writeJSON(w, http.StatusOK, SourcesResponse{Sources: sourceViews(s.config)})
 	case "/admin/api/routes":
@@ -362,7 +390,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !readMethod(w, r) {
 			return
 		}
-		writeJSON(w, http.StatusOK, ApprovedRegistriesResponse{Registries: approvedRegistryViews(s.config)})
+		writeJSON(w, http.StatusOK, RegistriesResponse{Registries: configuredRegistryViews(s.config)})
 	case "/admin/api/source-health":
 		s.handleSourceHealth(w, r)
 	case "/admin/api/requests":
@@ -378,12 +406,52 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleApplicationAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	assetPath := strings.TrimPrefix(r.URL.Path, "/")
+	body, err := adminAssets.ReadFile("frontend-dist/" + assetPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "application asset not found")
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeContent(w, r, assetPath, time.Time{}, bytes.NewReader(body))
+}
+
+func (s *Server) handleApplication(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	body, err := adminAssets.ReadFile("frontend-dist/index.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "application bundle unavailable")
+		return
+	}
+	nonceBytes := make([]byte, 18)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "application security initialization failed")
+		return
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
+	body = bytes.ReplaceAll(body, []byte("__REGSTAIR_CSP_NONCE__"), []byte(nonce))
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-"+nonce+"'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
+}
+
 func isApplicationPagePath(path string) bool {
 	if strings.HasPrefix(path, "/requests/") {
 		return true
 	}
 	switch path {
-	case "/", "/requests", "/routes", "/sources", "/cache", "/account", "/admin/users", "/admin/audit":
+	case "/", "/requests", "/routes", "/sources", "/cache", "/account", "/registry-access", "/admin/users", "/admin/audit":
 		return true
 	default:
 		return false
@@ -401,11 +469,11 @@ func (s *Server) handleFirstRun(w http.ResponseWriter, r *http.Request) bool {
 	case "/admin/api/setup":
 		s.handleSetup(w, r)
 		return true
-	case "/admin/static/admin.css", "/admin/static/admin.js", "/admin/api/health":
+	case "/admin/api/health":
 		return false
 	default:
 		if strings.HasPrefix(r.URL.Path, "/admin/") {
-			writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": map[string]string{"code": "setup_required", "message": "Complete first-run setup before using the control plane."}})
+			writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": map[string]string{"code": "setup_required", "message": "Complete first-run setup before using Regstair."}})
 			return true
 		}
 	}
@@ -413,20 +481,7 @@ func (s *Server) handleFirstRun(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) handleSetupPage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var rendered bytes.Buffer
-	data := map[string]string{"StylesheetURL": adminStylesheetURL, "ScriptURL": adminScriptURL, "SetupToken": s.setupToken}
-	if err := setupTemplate.ExecuteTemplate(&rendered, "setup.html", data); err != nil {
-		writeError(w, http.StatusInternalServerError, "render setup")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(rendered.Bytes())
-	}
+	s.handleApplication(w, r)
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
@@ -526,7 +581,7 @@ func (s *Server) handleSourceHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminOnlyPath(path string) bool {
-	if path == "/" || path == "/account" || path == "/admin/api/account" || strings.HasPrefix(path, "/admin/api/account/") || path == "/admin/api/registries" || path == "/admin/api/logout" {
+	if path == "/" || path == "/account" || path == "/registry-access" || path == "/admin/api/account" || strings.HasPrefix(path, "/admin/api/account/") || path == "/admin/api/registries" || path == "/admin/api/logout" {
 		return false
 	}
 	return true
@@ -538,7 +593,7 @@ func (s *Server) bootstrapRequired(ctx context.Context) bool {
 }
 
 func (s *Server) requiresSession(r *http.Request) bool {
-	if r.URL.Path == "/login" || r.URL.Path == "/admin/api/login" || strings.HasPrefix(r.URL.Path, "/admin/static/") {
+	if r.URL.Path == "/login" || r.URL.Path == "/admin/api/login" || r.URL.Path == "/regstair-logo.png" || strings.HasPrefix(r.URL.Path, "/admin/static/") || strings.HasPrefix(r.URL.Path, "/assets/") {
 		return false
 	}
 	if r.URL.Path == "/admin/api/account" || strings.HasPrefix(r.URL.Path, "/admin/api/account/") || r.URL.Path == "/admin/api/users" || strings.HasPrefix(r.URL.Path, "/admin/api/users/") || r.URL.Path == "/admin/api/registries" {
@@ -549,52 +604,34 @@ func (s *Server) requiresSession(r *http.Request) bool {
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var rendered bytes.Buffer
-	data := map[string]string{"StylesheetURL": adminStylesheetURL, "ScriptURL": adminScriptURL}
-	if err := loginTemplate.ExecuteTemplate(&rendered, "login.html", data); err != nil {
-		writeError(w, http.StatusInternalServerError, "render login")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(rendered.Bytes())
-	}
+	s.handleApplication(w, r)
 }
 
-func approvedRegistryViews(cfg config.Config) []ApprovedRegistryView {
-	views := []ApprovedRegistryView{}
+func configuredRegistryViews(cfg config.Config) []RegistryView {
+	views := []RegistryView{}
 	for _, source := range cfg.Sources {
 		policy := source.UserCredentials
-		if !source.Enabled || !policy.Approved {
+		if !source.Enabled {
 			continue
 		}
 		routes := []string{}
 		pullRelevant, pushRelevant := false, false
 		for _, route := range cfg.Routes {
 			used := false
-			if policy.Pull {
-				for _, sourceID := range route.Pull.Sources {
-					if sourceID == source.ID {
-						pullRelevant, used = true, true
-						break
-					}
+			for _, sourceID := range route.Pull.Sources {
+				if sourceID == source.ID {
+					pullRelevant, used = true, true
+					break
 				}
 			}
-			if policy.Push && route.Push.Destination == source.ID && !route.Push.Deny {
+			if route.Push.Destination == source.ID && !route.Push.Deny {
 				pushRelevant, used = true, true
 			}
 			if used {
 				routes = append(routes, route.Name)
 			}
 		}
-		if !pullRelevant && !pushRelevant {
-			continue
-		}
-		views = append(views, ApprovedRegistryView{ID: source.ID, Name: source.Name, Endpoint: source.Endpoint, Pull: pullRelevant, Push: pushRelevant, VerificationRepository: policy.VerificationRepository, Guidance: policy.Guidance, Routes: routes})
+		views = append(views, RegistryView{ID: source.ID, Name: source.Name, Endpoint: source.Endpoint, Pull: pullRelevant, Push: pushRelevant, VerificationRepository: policy.VerificationRepository, Guidance: policy.Guidance, Routes: routes})
 	}
 	return views
 }
@@ -1165,6 +1202,38 @@ func (s *Server) populateAuditWorkspace(r *http.Request, data *dashboardData) er
 	return nil
 }
 
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if !readMethod(w, r) {
+		return
+	}
+	events := s.listAuditEvents(r.Context(), 100)
+	users, _ := s.repo.ListUsers(r.Context())
+	labels := map[string]string{}
+	for _, user := range users {
+		label := user.DisplayName
+		if label == "" {
+			label = user.Username
+		}
+		labels[user.ID] = label
+	}
+	response := AuditResponse{}
+	for _, action := range []string{"user.bootstrap", "user.created", "user.updated", "user.disabled", "user.access_changed", "user.password_changed", "user.password_reset", "docker_token.created", "docker_token.revoked", "credential.created", "credential.replaced", "credential.deleted", "credential.verification_failed"} {
+		response.Actions = append(response.Actions, auditActionOption{Action: action, Label: auditActionLabel(action)})
+	}
+	for _, event := range events {
+		actor := labels[event.ActorUserID]
+		if actor == "" {
+			actor = event.ActorRole
+		}
+		target := labels[event.TargetID]
+		if target == "" {
+			target = strings.TrimSpace(event.TargetType + " " + event.TargetID)
+		}
+		response.Events = append(response.Events, AuditEventView{ID: event.ID, Timestamp: event.Timestamp, Action: event.Action, ActionLabel: auditActionLabel(event.Action), Outcome: event.Outcome, Actor: actor, Target: target, Detail: auditSafeDetail(event), CorrelationID: event.CorrelationID})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func auditActionLabel(action string) string {
 	labels := map[string]string{"user.bootstrap": "Created first administrator", "user.created": "Created user", "user.updated": "Updated user", "user.disabled": "Disabled user", "user.access_changed": "Changed user access", "user.password_changed": "Changed own password", "user.password_reset": "Reset user password", "docker_token.created": "Created Docker token", "docker_token.revoked": "Revoked Docker token", "credential.created": "Saved registry credential", "credential.replaced": "Replaced registry credential", "credential.deleted": "Removed registry credential", "credential.verification_failed": "Credential verification failed"}
 	if label := labels[action]; label != "" {
@@ -1348,7 +1417,7 @@ func (s *Server) listAuditEvents(ctx context.Context, limit int) []metadata.Audi
 }
 
 func (s *Server) credentialRows(ctx context.Context, userID string) []credentialRow {
-	registries := approvedRegistryViews(s.config)
+	registries := configuredRegistryViews(s.config)
 	bySource := map[string]auth.RegistryCredentialView{}
 	if s.auth != nil && s.auth.Credentials != nil {
 		credentials, _ := s.auth.Credentials.List(ctx, userID)

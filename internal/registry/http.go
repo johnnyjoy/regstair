@@ -407,13 +407,13 @@ func (c *HTTPConnector) resolveLocation(location string) (string, error) {
 func (c *HTTPConnector) doAuthenticated(req *http.Request) (*http.Response, error) {
 	c.authorize(req)
 	resp, err := c.client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusUnauthorized || c.basic == nil {
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
 
 	challenge := resp.Header.Get("WWW-Authenticate")
 	realm, service, scope, bearer := parseBearerChallenge(challenge)
-	if !bearer && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(challenge)), "basic") {
+	if !bearer && (c.basic == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(challenge)), "basic")) {
 		return resp, nil
 	}
 	resp.Body.Close()
@@ -529,7 +529,9 @@ func (c *HTTPConnector) bearerToken(ctx context.Context, realm string, service s
 	if err != nil {
 		return "", err
 	}
-	req.SetBasicAuth(c.basic.username, c.basic.password)
+	if c.basic != nil {
+		req.SetBasicAuth(c.basic.username, c.basic.password)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("%w: request registry token: %v", ErrUnavailable, err)

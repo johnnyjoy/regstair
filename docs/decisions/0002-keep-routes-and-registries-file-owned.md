@@ -1,21 +1,20 @@
 # ADR-0002: Keep Routes and Registries File-Owned
 
-Status: accepted
+Status: superseded in part by ADR-0009 for route ownership; registry/source ownership remains accepted
 Date: 2026-07-19
 
 ## Context
 
 Current Regstair routes and sources are loaded from YAML. The submitted next-level PRD introduced mutable database registry records without defining whether YAML or SQLite controlled runtime configuration. Two mutable authorities could disagree about hosts, capabilities, or credential use and create unsafe routing behavior.
 
-The current phase needs administrator-approved registries for per-user credentials, but it does not need a complete configuration revision, activation, and rollback system.
+The current phase needs configured registries for per-user credentials, but it does not need a complete registry configuration revision, activation, and rollback system.
 
 ## Decision
 
 For this phase, YAML remains authoritative for both global routes and registry/source definitions.
 
-The source configuration is extended with file-owned fields that specify:
+Every enabled configured source is an allowed registry credential target. The source configuration has file-owned fields that specify:
 
-- whether users may store credentials for the source;
 - whether those credentials may be used for private pulls;
 - whether those credentials may be used for pushes;
 - the verification repository or namespace;
@@ -23,7 +22,7 @@ The source configuration is extended with file-owned fields that specify:
 
 SQLite stores local users and encrypted per-user credential records keyed to stable configured source IDs. It does not store an independently mutable registry host or route definition.
 
-The UI and APIs expose approved registry configuration read-only in this phase. Users cannot add arbitrary registry hosts. Administrators edit the deployment configuration and restart or use a future validated configuration-revision mechanism.
+The UI and APIs expose configured registry definitions read-only in this phase. Users cannot add arbitrary registry hosts. Administrators edit the deployment configuration and restart or use a future validated configuration-revision mechanism. There is no independent approval boolean that can contradict enabled configuration.
 
 ## Alternatives
 
@@ -50,18 +49,18 @@ Deferred to a future versioned configuration-revision system. Direct field mutat
 ## Implementation Plan
 
 - Extend `internal/config/` source schema and validation with user-credential policy and verification fields.
-- Project approved configured sources through account and admin read APIs.
+- Project all enabled configured sources through account and admin read APIs.
 - Add SQLite foreign-reference validation at the repository/service boundary using stable source IDs; do not create registry CRUD tables or endpoints.
 - Keep connector construction in `internal/app/` based on validated file configuration.
 - Render registry configuration read-only in user/admin UI.
-- Reference ADR-0002 near source-policy validation and approved-registry projection.
+- Reference ADR-0002 near source-policy validation and configured-registry projection.
 
 ## Verification
 
-- [ ] Only configured, enabled, route-relevant, user-credential-approved sources appear to users.
+- [x] All configured, enabled sources appear to users without a separate approval gate.
 - [ ] Invalid capability combinations and verification settings fail configuration validation.
-- [ ] Per-user credential operations reject unknown or unapproved source IDs.
-- [ ] Restart reproduces the same approved registry projection from YAML.
+- [x] Per-user credential operations reject unknown or disabled source IDs.
+- [x] Restart reproduces the same configured registry projection from YAML.
 - [ ] No registry CRUD table or mutating endpoint is introduced in this phase.
 - [ ] Anonymous pull, per-user Harbor credential, and Docker smoke paths remain valid.
 

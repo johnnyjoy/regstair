@@ -34,7 +34,7 @@ To run the real Harbor integration:
 ./scripts/harbor-smoke.sh
 ```
 
-The script downloads the pinned official Harbor installer on first use, generates its Compose deployment under `.runtime/harbor-smoke`, creates a private `regstair` project and a least-privilege project robot, then proves Harbor pull and push through Regstair. It prints both local URLs and exact shutdown commands when complete.
+The script downloads the pinned official Harbor installer on first use, generates its Compose deployment under `.runtime/harbor-smoke`, creates a private `regstair` project, and creates an ordinary Harbor user with Developer access. Regstair verifies and stores that user's Harbor credential, then proves Harbor pull and push through the proxy. A separate least-privilege robot is used only to seed and inspect fixture content. Override the test identity with `HARBOR_TEST_USERNAME` and `HARBOR_TEST_PASSWORD`. The script prints both local URLs and exact shutdown commands when complete.
 
 For real Docker CLI compatibility, run:
 

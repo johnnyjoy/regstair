@@ -737,6 +737,21 @@ func (r *SQLiteRepository) migrate(ctx context.Context) error {
 			fresh_until_nanos INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(logical_repository, tag)
 		)`,
+		`CREATE TABLE IF NOT EXISTS cache_bindings (
+			logical_repository TEXT NOT NULL,
+			route TEXT NOT NULL,
+			source TEXT NOT NULL,
+			physical_repository TEXT NOT NULL,
+			manifest_digest TEXT NOT NULL,
+			object_digest TEXT NOT NULL,
+			object_kind TEXT NOT NULL CHECK(object_kind IN ('manifest', 'blob')),
+			access TEXT NOT NULL CHECK(access IN ('challenge', 'proxy', 'current_user_required')),
+			user_id TEXT NOT NULL DEFAULT '',
+			created_at_nanos INTEGER NOT NULL,
+			updated_at_nanos INTEGER NOT NULL,
+			PRIMARY KEY(logical_repository, route, source, manifest_digest, object_digest, access, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cache_bindings_lookup ON cache_bindings(logical_repository, route, object_digest)`,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,
 			applied_at_nanos INTEGER NOT NULL

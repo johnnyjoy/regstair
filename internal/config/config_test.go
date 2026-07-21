@@ -196,7 +196,7 @@ func TestLoadRejectsRemovedSharedCredentials(t *testing.T) {
 	}
 }
 
-func TestPolicyConfigRejectsRemovedProxyAuth(t *testing.T) {
+func TestPolicyConfigRejectsRemovedAuthModeField(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
 sources:
@@ -207,7 +207,30 @@ sources:
 routes: []
 `)
 	if _, err := LoadFile(path); err == nil {
-		t.Fatal("LoadFile() accepted removed proxy auth")
+		t.Fatal("LoadFile() accepted removed auth mode field")
+	}
+}
+
+func TestPolicyConfigAcceptsClosedCredentialStrategies(t *testing.T) {
+	for _, strategy := range []string{"challenge", "proxy", "current_user_required"} {
+		t.Run(strategy, func(t *testing.T) {
+			path := writeConfig(t, "version: 1\nsources:\n  - id: source\n    endpoint: https://registry.example\n    enabled: true\n    auth:\n      strategy: "+strategy+"\nroutes: []\n")
+			cfg, err := LoadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cfg.PolicyConfig(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	path := writeConfig(t, "version: 1\nsources:\n  - id: source\n    endpoint: https://registry.example\n    enabled: true\n    auth:\n      strategy: invented\nroutes: []\n")
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.PolicyConfig(); err == nil {
+		t.Fatal("unsupported credential strategy accepted")
 	}
 }
 
@@ -221,7 +244,6 @@ sources:
     auth:
       strategy: challenge
     user_credentials:
-      approved: true
       pull: true
       push: true
       verification_repository: regstair/check
@@ -247,7 +269,6 @@ sources:
       token_hosts:
         - auth.example
     user_credentials:
-      approved: true
       pull: true
       verification_repository: regstair/check
 routes: []
@@ -270,7 +291,6 @@ sources:
       token_hosts:
         - https://evil.example/token
     user_credentials:
-      approved: true
       pull: true
       verification_repository: regstair/check
 routes: []
@@ -284,7 +304,7 @@ routes: []
 	}
 }
 
-func TestPolicyConfigAcceptsApprovedUserCredentialSource(t *testing.T) {
+func TestPolicyConfigAcceptsEnabledUserCredentialSource(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
 sources:
@@ -293,7 +313,6 @@ sources:
     endpoint: https://harbor.example.test
     enabled: true
     user_credentials:
-      approved: true
       pull: true
       push: true
       verification_repository: regstair/credential-check
@@ -308,18 +327,13 @@ routes: []
 		t.Fatalf("PolicyConfig() error = %v", err)
 	}
 	policy := cfg.Sources[0].UserCredentials
-	if !policy.Approved || !policy.Pull || !policy.Push || policy.VerificationRepository != "regstair/credential-check" {
+	if !policy.Pull || !policy.Push || policy.VerificationRepository != "regstair/credential-check" {
 		t.Fatalf("user credential policy = %#v", policy)
 	}
 }
 
 func TestPolicyConfigRejectsUnsafeOrContradictoryUserCredentialSource(t *testing.T) {
-	tests := []struct{ name, policy string }{
-		{"plaintext without opt in", "approved: true\n      pull: true\n      verification_repository: check/repo"},
-		{"no operations", "approved: true\n      verification_repository: check/repo"},
-		{"no verification repository", "approved: true\n      pull: true"},
-		{"settings while unapproved", "approved: false\n      pull: true\n      verification_repository: check/repo"},
-	}
+	tests := []struct{ name, policy string }{{"plaintext without opt in", "pull: true\n      verification_repository: check/repo"}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeConfig(t, "version: 1\nsources:\n  - id: harbor\n    endpoint: http://harbor:5000\n    enabled: true\n    user_credentials:\n      "+tt.policy+"\nroutes: []\n")
@@ -334,7 +348,7 @@ func TestPolicyConfigRejectsUnsafeOrContradictoryUserCredentialSource(t *testing
 	}
 }
 
-func TestPolicyConfigAllowsExplicitInsecureApprovedFixture(t *testing.T) {
+func TestPolicyConfigAllowsExplicitInsecureFixture(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
 sources:
@@ -342,7 +356,6 @@ sources:
     endpoint: http://harbor:5000
     enabled: true
     user_credentials:
-      approved: true
       pull: true
       verification_repository: check/repo
       allow_insecure: true

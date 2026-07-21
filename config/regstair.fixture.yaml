@@ -1,0 +1,67 @@
+version: 1
+
+sources:
+  - id: internal-curated
+    name: Internal Curated Registry
+    endpoint: http://internal-registry:5000
+    type: internal
+    enabled: true
+    user_credentials:
+      allow_insecure: true
+
+  - id: external-registry
+    name: External Registry Stand-In
+    endpoint: http://external-registry:5000
+    type: external
+    enabled: true
+    user_credentials:
+      allow_insecure: true
+
+  - id: harbor-team-a
+    name: Team A Destination Registry
+    endpoint: http://destination-registry:5000
+    type: internal
+    enabled: true
+    user_credentials:
+      allow_insecure: true
+
+routes:
+  - name: curated-library
+    match: library/**
+    precedence: 10
+    pull:
+      sources:
+        - internal-curated
+        - external-registry
+      authoritative: internal-curated
+      external_fallback: true
+    push:
+      destination: internal-curated
+    rewrite:
+      strip_prefix: library/
+      add_prefix: library/
+
+  - name: protected-platform
+    match: platform/**
+    precedence: 20
+    pull:
+      sources:
+        - internal-curated
+      authoritative: internal-curated
+      external_fallback: false
+    push:
+      destination: internal-curated
+
+  - name: team-a-publish
+    match: team-a/**
+    precedence: 30
+    pull:
+      sources:
+        - harbor-team-a
+      authoritative: harbor-team-a
+      external_fallback: false
+    push:
+      destination: harbor-team-a
+    rewrite:
+      strip_prefix: team-a/
+      add_prefix: production-team-a/

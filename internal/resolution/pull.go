@@ -39,6 +39,18 @@ type PullResult struct {
 	CredentialSource string
 }
 
+type BlobRequest struct {
+	Repository string
+	Digest     string
+	Principal  identity.Principal
+}
+
+type BlobResult struct {
+	Content          io.ReadCloser
+	Size             int64
+	CredentialSource string
+}
+
 type PullResolver struct {
 	policy     *policy.Engine
 	store      content.Store
@@ -55,7 +67,7 @@ type Authorizer interface {
 
 type ConnectorProvider interface {
 	ConnectorFor(context.Context, identity.Principal, string, metadata.Operation) (registry.Connector, string, error)
-	AuthorizeCache(context.Context, identity.Principal, string, metadata.Operation) (string, error)
+	AuthorizeCache(context.Context, identity.Principal, metadata.CacheBinding, metadata.Operation) (string, error)
 }
 
 type ResolverOption func(*resolverOptions)
@@ -152,6 +164,9 @@ func (r *PullResolver) Pull(ctx context.Context, request PullRequest) (PullResul
 		if err := r.cacheManifest(ctx, connector, decision.PhysicalRepository, manifest); err != nil {
 			return PullResult{}, err
 		}
+		if err := r.recordCacheBindings(ctx, request, decision, sourceID, manifest, credentialSource); err != nil {
+			return PullResult{}, err
+		}
 
 		fallbackUsed := index > 0
 		explanation := append([]string(nil), decision.Explanation...)
@@ -215,17 +230,10 @@ func (r *PullResolver) cacheManifest(ctx context.Context, connector registry.Con
 }
 
 func (r *PullResolver) tryCache(ctx context.Context, started time.Time, request PullRequest, decision policy.PullDecision) (PullResult, bool, error) {
-	cacheSource := ""
-	if len(decision.CandidateSources) > 0 {
-		cacheSource = decision.CandidateSources[0]
-	}
 	if isDigestReference(decision.Reference) {
-		credentialSource := "anonymous"
-		if r.provider != nil && cacheSource != "" {
-			var err error
-			if credentialSource, err = r.provider.AuthorizeCache(ctx, request.Principal, cacheSource, metadata.OperationPull); err != nil {
-				return PullResult{}, false, err
-			}
+		_, credentialSource, ok, err := r.authorizeCachedObject(ctx, request.Principal, decision, decision.Reference)
+		if err != nil || !ok {
+			return PullResult{}, false, err
 		}
 		manifest, ok, err := r.cachedManifestByDigest(ctx, decision.Reference, registry.Descriptor{Digest: decision.Reference})
 		if err != nil || !ok {
@@ -251,12 +259,12 @@ func (r *PullResolver) tryCache(ctx context.Context, started time.Time, request 
 	if mapping == nil || !mappingIsFresh(*mapping, r.now()) {
 		return PullResult{}, false, nil
 	}
-	credentialSource := "anonymous"
-	if r.provider != nil {
-		var err error
-		if credentialSource, err = r.provider.AuthorizeCache(ctx, request.Principal, mapping.Source, metadata.OperationPull); err != nil {
-			return PullResult{}, false, err
-		}
+	binding, credentialSource, ok, err := r.authorizeCachedObject(ctx, request.Principal, decision, mapping.Digest)
+	if err != nil || !ok {
+		return PullResult{}, false, err
+	}
+	if binding.Source != mapping.Source || binding.ManifestDigest != mapping.Digest {
+		return PullResult{}, false, nil
 	}
 
 	manifest, ok, err := r.cachedManifestByDigest(ctx, mapping.Digest, registry.Descriptor{
@@ -280,6 +288,90 @@ func (r *PullResolver) tryCache(ctx context.Context, started time.Time, request 
 		return PullResult{}, false, err
 	}
 	return result, true, nil
+}
+
+func (r *PullResolver) recordCacheBindings(ctx context.Context, request PullRequest, decision policy.PullDecision, source string, manifest registry.Manifest, credentialSource string) error {
+	access := metadata.CacheAccessChallenge
+	userID := ""
+	if credentialSource == "current_user" {
+		access, userID = metadata.CacheAccessCurrentUserRequired, request.Principal.ID
+	} else if credentialSource == "proxy" {
+		access = metadata.CacheAccessProxy
+	}
+	bindings := []metadata.CacheBinding{{LogicalRepository: decision.LogicalRepository, Route: decision.RouteName, Source: source, PhysicalRepository: decision.PhysicalRepository, ManifestDigest: manifest.Digest, ObjectDigest: manifest.Digest, ObjectKind: "manifest", Access: access, UserID: userID}}
+	for _, digest := range manifest.BlobDigests {
+		bindings = append(bindings, metadata.CacheBinding{LogicalRepository: decision.LogicalRepository, Route: decision.RouteName, Source: source, PhysicalRepository: decision.PhysicalRepository, ManifestDigest: manifest.Digest, ObjectDigest: digest, ObjectKind: "blob", Access: access, UserID: userID})
+	}
+	return r.metadata.RecordCacheBindings(ctx, bindings)
+}
+
+func (r *PullResolver) authorizeCachedObject(ctx context.Context, principal identity.Principal, decision policy.PullDecision, digest string) (metadata.CacheBinding, string, bool, error) {
+	bindings, err := r.metadata.ListCacheBindings(ctx, decision.LogicalRepository, decision.RouteName, digest)
+	if err != nil {
+		return metadata.CacheBinding{}, "", false, err
+	}
+	var denied error
+	for _, binding := range bindings {
+		if !containsString(decision.CandidateSources, binding.Source) {
+			continue
+		}
+		if binding.Access == metadata.CacheAccessChallenge {
+			return binding, "anonymous", true, nil
+		}
+		if r.provider == nil {
+			denied = registry.ErrCredentialRequired
+			continue
+		}
+		credentialSource, err := r.provider.AuthorizeCache(ctx, principal, binding, metadata.OperationPull)
+		if err == nil {
+			return binding, credentialSource, true, nil
+		}
+		denied = err
+	}
+	if denied != nil {
+		return metadata.CacheBinding{}, "", false, denied
+	}
+	return metadata.CacheBinding{}, "", false, nil
+}
+
+func (r *PullResolver) OpenBlob(ctx context.Context, request BlobRequest) (BlobResult, error) {
+	decision, err := r.policy.ResolvePull(policy.PullRequest{Repository: request.Repository, Reference: request.Digest})
+	if err != nil {
+		return BlobResult{}, err
+	}
+	if !r.authorized(request.Principal, metadata.OperationPull, decision.RouteName) {
+		return BlobResult{}, ErrUnauthorized
+	}
+	_, credentialSource, ok, err := r.authorizeCachedObject(ctx, request.Principal, decision, request.Digest)
+	if err != nil {
+		return BlobResult{}, err
+	}
+	if !ok {
+		return BlobResult{}, content.ErrBlobNotFound
+	}
+	rc, err := r.store.OpenBlob(ctx, request.Digest)
+	if err != nil {
+		return BlobResult{}, err
+	}
+	var size int64
+	if blobs, listErr := r.store.ListBlobs(ctx); listErr == nil {
+		for _, blob := range blobs {
+			if blob.Digest == request.Digest {
+				size = blob.Size
+				break
+			}
+		}
+	}
+	return BlobResult{Content: rc, Size: size, CredentialSource: credentialSource}, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *PullResolver) cachedManifestByDigest(ctx context.Context, digest string, descriptor registry.Descriptor) (registry.Manifest, bool, error) {

@@ -1,426 +1,273 @@
+<p align="center">
+  <img src="frontend/public/regstair-logo.png" alt="Regstair" width="280">
+</p>
+
 # Regstair
 
-Regstair is a policy-driven OCI registry gateway. It gives developers and CI systems one stable registry endpoint while administrators decide where pulls and pushes actually go.
+[![CI](https://github.com/johnnyjoy/regstair/actions/workflows/ci.yml/badge.svg)](https://github.com/johnnyjoy/regstair/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/johnnyjoy/regstair)](https://github.com/johnnyjoy/regstair/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The Build Week MVP proves four core behaviors:
+**Policy-driven OCI registry routing, caching, and credential mediation through one stable endpoint.**
 
-- pull through Regstair with internal-first routing and approved external fallback;
-- replay a cached pull when the external source is unavailable;
-- block fallback for protected internal namespaces;
-- push through Regstair to a policy-selected destination with namespace rewriting;
-- deduplicate shared blobs in the local content-addressed store.
+Regstair gives developers and CI systems one registry address while administrators control where images are pulled from, where they are pushed, which credentials are used, and when cached content may be served.
 
-## Current Status
+## Why Regstair
 
-This repository contains a narrow, testable MVP implementation:
+Organizations commonly use several OCI registries: an internal registry, Harbor, and one or more hosted services. Without a gateway, every workstation and CI job must understand those locations, namespaces, and credentials.
 
-- minimal OCI Distribution HTTP gateway in Go;
-- YAML policy configuration;
-- HTTP connectors for local `registry:2` sources and destinations;
-- filesystem content-addressed blob store;
-- SQLite metadata repository for request events, provenance, and tag mappings;
-- read-only admin UI and JSON API;
-- Docker Compose demo environment;
-- Basic client auth for the Regstair `/v2/` endpoint;
-- auth config scaffolding for proxy-owned upstream Basic credentials.
+Regstair moves that knowledge into deterministic organizational policy:
 
-Live Docker Hub, GHCR, Harbor auth, UI editing, cache eviction, TLS termination, and broader OCI artifact support are intentionally deferred.
+- route pulls across internal and approved external registries;
+- route pushes to controlled destinations with namespace rewriting;
+- cache manifests and blobs locally by digest;
+- protect authoritative namespaces from unsafe external fallback;
+- authenticate Docker users with revocable, time-limited tokens;
+- use verified per-user credentials only after routing selects an upstream;
+- preserve anonymous pulls when the selected registry permits them;
+- explain routing decisions, provenance, cache behavior, and security events.
 
-## Product Design
+```text
+Docker / CI / OCI client
+          |
+          v
+   Regstair endpoint
+     |     |     |
+     |     |     +--> policy-selected push destination
+     |     +--------> approved external registry
+     +--------------> authoritative internal registry
+          |
+          +----------> local content-addressed cache and provenance
+```
 
-The authoritative interface direction, information architecture, accessibility standard, and implementation slices are defined in [docs/UI_UX_DESIGN.md](docs/UI_UX_DESIGN.md). The supporting [hostile UI/UX audit](docs/UI_UX_HOSTILE_AUDIT.md) records the usability and security findings that motivated it.
+Routes determine where an operation goes. Authentication strategy then determines whether Regstair should remain anonymous or answer an upstream challenge with the current user's credential.
+
+## Current Release
+
+The current release is `v0.1.0`:
+
+```bash
+docker pull ghcr.io/johnnyjoy/regstair:v0.1.0
+```
+
+Published Linux platforms:
+
+- `linux/amd64`
+- `linux/arm64`
+- `linux/arm/v7`
+- `linux/ppc64le`
+- `linux/s390x`
+
+Release images include OCI source, revision, version, license, provenance, and SBOM metadata. Regstair does not publish a moving `latest` tag; pin a version or image digest.
 
 ## Quick Start
+
+The default Compose deployment starts Regstair with Docker Hub and GitHub Container Registry routes. Public content can be pulled anonymously through the cache; signed-in users can connect their own upstream accounts in the web interface.
 
 Requirements:
 
 - Docker with Docker Compose;
-- `curl`;
-- `jq`;
-- `sha256sum`;
-- `awk`.
+- a browser.
 
-Run the automated demo smoke test:
+Clone the repository:
 
 ```bash
-./scripts/compose-smoke.sh
+git clone https://github.com/johnnyjoy/regstair.git
+cd regstair
 ```
 
-The script builds Regstair, starts the Compose environment, seeds local registries, runs the MVP scenarios, verifies the admin API, and leaves the stack running for inspection.
-
-For the scenario-by-scenario walkthrough, see [docs/DEMO.md](docs/DEMO.md).
-
-Run the authenticated smoke test:
-
-```bash
-./scripts/compose-auth-smoke.sh
-```
-
-Prove Regstair-owned credentials against an authenticated upstream registry:
-
-```bash
-./scripts/compose-proxy-auth-smoke.sh
-```
-
-Run the automated Harbor integration:
-
-```bash
-./scripts/harbor-smoke.sh
-```
-
-The Harbor harness pins the official online installer, generates a local Compose deployment under `.runtime/harbor-smoke`, creates a private project and least-privilege robot account, and proves authenticated pull and push through Regstair. The first run downloads Harbor's component images.
-
-Run the same fixture as a clean next-level release flow:
-
-```bash
-REGSTAIR_NEXT_LEVEL_SMOKE=1 ./scripts/harbor-smoke.sh
-```
-
-This mode starts with a fresh Regstair volume and credential key, bootstraps the first local administrator, verifies and encrypts that user's Harbor credential, issues a time-limited Docker token, and proves pull and push use the authenticated user's credential.
-
-That script generates a temporary auth-enabled config, starts an isolated Compose project on dynamically selected host ports, verifies `/v2/` Basic auth, proves an allowed pull and push succeed, and checks that a denied route is audited with `authorization_denied`.
-
-Run the real Docker client smoke test:
-
-```bash
-./scripts/docker-client-smoke.sh
-```
-
-That script uses `docker build`, `docker push`, `docker login`, `docker pull`, and routed `docker push` against Regstair using a temporary Docker config directory.
-
-Open the admin UI:
-
-```text
-http://127.0.0.1:8080/
-```
-
-Stop the demo stack:
-
-```bash
-docker compose -p regstair-smoke down
-```
-
-Remove the persistent demo volume as well:
-
-```bash
-docker compose -p regstair-smoke down -v
-```
-
-## Demo Topology
-
-The default Compose environment uses local `registry:2` containers so the demo is reproducible without private infrastructure.
-
-```text
-Docker / curl / CI
-   |
-   v
-Regstair :8080
-   |
-   +--> internal-curated     http://internal-registry:5000
-   +--> external-registry    http://external-registry:5000
-   +--> harbor-team-a        http://destination-registry:5000
-```
-
-Published host ports:
-
-- Regstair: `127.0.0.1:8080`
-- internal curated registry: `127.0.0.1:5001`
-- external registry stand-in: `127.0.0.1:5002`
-- destination registry stand-in: `127.0.0.1:5003`
-
-Regstair stores blobs and SQLite metadata under the container content root:
-
-```text
-/var/lib/regstair/content
-```
-
-Compose mounts that path through the named volume:
-
-```text
-regstair-data
-```
-
-The SQLite database defaults to:
-
-```text
-/var/lib/regstair/content/metadata/regstair.db
-```
-
-## Routing Policy
-
-The demo policy lives in [config/regstair.example.yaml](config/regstair.example.yaml).
-
-The important routes are:
-
-- `curated-library`: `library/**` pulls check `internal-curated` first, then `external-registry`; fallback is allowed.
-- `protected-platform`: `platform/**` pulls check only `internal-curated`; external fallback is blocked.
-- `team-a-publish`: `team-a/**` pushes publish to `harbor-team-a` and rewrite `team-a/` to `production-team-a/`.
-
-This means a request for:
-
-```text
-library/nginx:1.27
-```
-
-checks the internal registry first, then the approved external source, and then caches the content locally by digest.
-
-A request for:
-
-```text
-platform/api:1.0.0
-```
-
-does not fall back externally, even if the same image exists in the external stand-in registry.
-
-A push to:
-
-```text
-team-a/service:4.1
-```
-
-lands in the destination registry as:
-
-```text
-production-team-a/service:4.1
-```
-
-## Control Plane API
-
-Useful endpoints:
-
-```text
-GET /healthz
-GET /readyz
-GET /v2/
-GET /
-GET /admin/api/sources
-GET /admin/api/routes
-GET /admin/api/requests?limit=20
-GET /admin/api/artifacts
-GET /admin/api/cache
-GET /admin/api/provenance?reference=library/nginx:1.27
-```
-
-The web application presents operational data read-only while supporting authenticated account, token, credential, and user-management workflows. Request history can be filtered by reference, client identity, route, operation, source or destination, status, error classification, and UTC time range. Filters are stored in the URL and request pages use stable cursor pagination.
-
-Measured cache performance, deduplication, current capacity limits, and recommended hardening are recorded in [Cache Speed and Capacity Evaluation](docs/CACHE_EVALUATION.md). Reproduce the local 64 MiB test with `./scripts/cache-benchmark.sh`.
-
-`GET /admin/api/requests` accepts the same filter names plus `limit` (1-100) and an opaque `cursor`. Successful responses include `requests` and, when another page exists, `next_cursor`.
-
-## Local Development
-
-Run unit and package tests:
-
-```bash
-GOCACHE=/tmp/regstair-go-cache go test ./...
-```
-
-Build the static binary path used by Docker:
-
-```bash
-GOCACHE=/tmp/regstair-go-cache CGO_ENABLED=0 go build ./cmd/regstair
-```
-
-Run with local stub connectors:
-
-```bash
-go run ./cmd/regstair \
-  -config=config/regstair.example.yaml \
-  -content-root=/tmp/regstair/content \
-  -stub-sources \
-  -stub-fixtures
-```
-
-Run with real HTTP connectors through Compose:
+Build and start the current source:
 
 ```bash
 docker compose up -d --build
 ```
 
-Stop the default Compose project:
+Compose creates the credential-encryption key once in a dedicated persistent volume. Back up that volume with the Regstair data volume; losing the key makes saved upstream credentials unrecoverable.
+
+Regstair creates a persistent local certificate authority and HTTPS certificate on first start. Install its public CA for Docker before using the registry endpoint:
+
+```bash
+curl -fsS http://127.0.0.1:8080/regstair-ca.crt -o regstair-ca.crt
+sudo mkdir -p /etc/docker/certs.d/127.0.0.1:8443
+sudo cp regstair-ca.crt /etc/docker/certs.d/127.0.0.1:8443/ca.crt
+sudo systemctl restart docker
+```
+
+Import the same `regstair-ca.crt` into the workstation or browser trust store, then open [https://127.0.0.1:8443/setup](https://127.0.0.1:8443/setup) and create the first administrator. Setup is available only while the user database is empty and closes permanently after the first account is created. The HTTP listener on port `8080` serves health checks and the public CA certificate and redirects other requests to HTTPS.
+
+### First Docker Operation
+
+Pull public Docker Hub content through Regstair without adding Docker Hub credentials:
+
+```bash
+docker pull 127.0.0.1:8443/library/alpine:latest
+```
+
+Repeat the pull to exercise the local content-addressed cache, then open [Cache](https://127.0.0.1:8443/cache) or [Requests](https://127.0.0.1:8443/requests) to inspect the result.
+
+### Private Content And Pushes
+
+In Regstair, open **Account**, create a Docker token, and retain the token when it is shown. It cannot be displayed again.
+
+Authenticate using your local Regstair username and the token as the password:
+
+```bash
+docker login 127.0.0.1:8443 --username YOUR_USERNAME
+```
+
+Open **Registry access** and connect Docker Hub or GitHub Container Registry with the credentials issued by that provider. Image names are matched by routing rules; clients do not select an upstream by placing its hostname in the repository path. Add an organization-specific push route before publishing a user-owned repository.
+
+Open [Requests](https://127.0.0.1:8443/requests) to inspect the authenticated user, selected route, rewritten destination, status, and routing explanation.
+
+Stop the evaluation environment:
 
 ```bash
 docker compose down
 ```
 
-## Auth
-
-### First administrator bootstrap
-
-Regstair has no default administrator and never prints or generates an administrator password. A new deployment exposes a dedicated setup workflow and keeps the operational dashboard and APIs closed until setup completes. Compose binds Regstair to loopback by default.
+Remove its persistent Regstair data as well:
 
 ```bash
-docker compose up -d --build
+docker compose down -v
 ```
 
-Open `http://127.0.0.1:8080/admin/`. Regstair redirects to `/admin/setup`, creates the first enabled administrator transactionally, signs that administrator in, and permanently closes setup.
+## Configuration Model
 
-Headless automation uses the same one-shot JSON API. Fetch the ephemeral setup token, then submit the chosen administrator values from the same trusted host:
+Regstair deliberately has two configuration authorities:
 
-```bash
-setup_token=$(curl -fsS http://127.0.0.1:8080/admin/api/setup | jq -r .setup_token)
-curl -fsS -X POST http://127.0.0.1:8080/admin/api/setup \
-  -H 'Content-Type: application/json' \
-  -H "X-Regstair-Setup-Token: $setup_token" \
-  --data-binary @admin-setup.json
+| Data | Authority |
+| --- | --- |
+| Routes and configured registries | YAML configuration mounted read-only |
+| Local users, roles, sessions, Docker tokens, audit events, and per-user credentials | SQLite |
+| Cached manifests and blobs | Filesystem content store |
+| Credential-encryption key | Dedicated persistent volume by default; operator-supplied key in managed deployments |
+
+The example policy is [config/regstair.example.yaml](config/regstair.example.yaml). A route declares what it matches, its ordered pull sources, fallback policy, push destination, and optional namespace rewrite:
+
+```yaml
+routes:
+  - name: docker-hub-library
+    match: library/**
+    precedence: 10
+    pull:
+      sources:
+        - docker-hub
+      authoritative: docker-hub
+      external_fallback: false
+    push:
+      destination: docker-hub
 ```
 
-`admin-setup.json` contains `username`, `password`, and optional `display_name` and `email` fields. Protect and remove that file as a deployment secret. The endpoint returns `409` after any user exists. To publish Regstair beyond loopback only after setup, set `REGSTAIR_BIND_ADDRESS` explicitly and terminate TLS before the service.
+Upstream authentication follows one built-in rule. Regstair attempts pulls anonymously. If the selected registry challenges the request, Regstair retries with the current user's saved credential when that user has one. A user does not need an account at every upstream registry to pull public content. Pushes require an authenticated Regstair user and use that user's saved credential.
 
-Before disabling or demoting the last enabled administrator, create or promote another enabled administrator. Regstair rejects changes that would leave no enabled administrator. For host-level recovery, stop the serving container, back up the database, and run:
+Configured registries may define credential verification and advanced compatibility settings such as allowed token-service hosts. Authentication or authorization failure does not change the selected route or advance pull fallback.
+
+## Compatibility
+
+| Capability | Status |
+| --- | --- |
+| Docker login, pull, and push | Tested |
+| OCI Distribution `registry:2` | Tested |
+| Harbor private projects and robot credentials | Tested |
+| Anonymous upstream pulls | Tested |
+| Scoped Bearer authentication at the Regstair endpoint | Tested with real Docker login, pull, and push |
+| Basic and scoped Bearer upstream challenges | Implemented and locally tested |
+| Docker Hub anonymous pull and cache replay | Live tested |
+| Docker Hub and GHCR per-user credentials | Configured; provider-account qualification remains environment-dependent |
+| Multi-replica deployment | Not supported |
+| OCI referrers and broader artifact types | Limited |
+
+Regstair currently targets a single Docker-hosted instance for a small or medium enterprise network. It is not a replacement for Harbor project administration, scanning, replication, retention, or registry lifecycle management.
+
+## Production Requirements
+
+The repository Compose file is an evaluation and integration topology, not a complete production deployment. Before exposing Regstair beyond loopback:
+
+- install the generated Regstair CA on clients, replace the generated identity with an organizational certificate, or terminate TLS at a trusted reverse proxy;
+- pin the Regstair image by version or digest;
+- mount an authoritative YAML configuration read-only;
+- use persistent storage for the content root and SQLite database;
+- generate and protect a separate 32-byte credential-encryption key;
+- back up configuration, metadata, content, and required key material;
+- add trusted edge rate limiting for internet-facing or multi-process deployments;
+- restrict direct network access to upstream registries and fixture ports;
+- test restore and administrator recovery before relying on the service.
+
+The browser session cookie is `Secure`, `HttpOnly`, and `SameSite=Strict`. The CSRF cookie is `Secure` and `SameSite=Strict` but intentionally script-readable so the browser client can submit the synchronizer token. Regstair serves HTTPS by default on `8443`; the generated CA and private keys persist in the `regstair-tls` volume. Set `REGSTAIR_TLS_HOSTS` to the comma-separated DNS names and IP addresses clients use before the first start. Existing certificates are never silently regenerated when that setting changes.
+
+Losing every key capable of decrypting stored upstream credentials permanently loses access to those credential values. Users must replace affected credentials; Regstair cannot recover them.
+
+Read [Backup, Restore, and Credential-Key Lifecycle](docs/BACKUP_KEY_LIFECYCLE.md) before enabling stored upstream credentials.
+
+### Administrator Recovery
+
+Regstair prevents disabling or demoting the last enabled administrator. For host-level password recovery, stop the serving container, back up the database, and mount a temporary password file into the one-shot recovery container:
 
 ```bash
-docker compose run --rm regstair admin reset-password \
+mkdir -p .runtime
+printf '%s\n' 'CHOOSE_A_NEW_PASSWORD' > .runtime/admin-password
+sudo chown 65532:65532 .runtime/admin-password
+sudo chmod 400 .runtime/admin-password
+
+docker compose stop regstair
+docker compose run --rm --no-deps \
+  -v "$PWD/.runtime/admin-password:/run/secrets/regstair-admin-password:ro" \
+  regstair admin reset-password \
   -metadata-path /var/lib/regstair/content/metadata/regstair.db \
-  -username admin \
+  -username YOUR_ADMIN_USERNAME \
   -password-file /run/secrets/regstair-admin-password
+
+sudo rm -f .runtime/admin-password
+docker compose up -d regstair
 ```
 
-The replacement password is read from the mounted file, never a command argument or environment variable. Recovery revokes that administrator's web sessions and Docker tokens and records a `user.password_recovered` audit event.
+Recovery revokes that administrator's browser sessions and Docker tokens and records a redacted audit event.
 
-Authenticated admin sessions use `Secure`, `HttpOnly`, `SameSite=Strict` cookies. Serve `/admin/` through TLS, normally using a reverse proxy in front of the Compose service. Plain HTTP health, readiness, and OCI endpoints do not make the browser session cookie less restrictive.
+## Documentation
 
-Admin login and presented Docker credentials are rate-limited by both source address and normalized account after five failures in five minutes, with a fifteen-minute block and generic `429` response. Credential-free requests are not counted, preserving configured anonymous-pull behavior. The limiter is process-local and intentionally ignores forwarding headers; multi-replica or internet-facing deployments should add a trusted reverse-proxy edge limit.
+| Job | Document |
+| --- | --- |
+| Evaluate the routing and cache scenarios | [Demo Guide](docs/DEMO.md) |
+| Operate backup, restore, and key rotation | [Backup and Key Lifecycle](docs/BACKUP_KEY_LIFECYCLE.md) |
+| Understand cache performance and capacity | [Cache Evaluation](docs/CACHE_EVALUATION.md) |
+| Review security boundaries and abuse cases | [Threat Model](docs/THREAT_MODEL.md) |
+| Review secret-leak qualification | [Secret-Leak Qualification](docs/SECRET_LEAK_QUALIFICATION.md) |
+| Understand accepted architecture decisions | [ADR Index](docs/decisions/README.md) |
+| Read the authoritative product requirements | [Next-Level Service PRD](docs/NEXT_LEVEL_SERVICE_PRD.md) |
+| Review the current interface specification | [UI/UX Design](docs/UI_UX_DESIGN.md) |
 
-Before the first local user exists, `/admin/` redirects to setup and operational APIs return `428 setup_required`. There is no anonymous legacy dashboard. The first successful setup immediately places the entire control plane behind session authentication.
+The JSON control-plane API remains under `/admin/api/*`. It uses the same setup, session, role, CSRF, redaction, and immediate-invalidation security boundaries as the web application. Treat the API as pre-1.0 until an explicit compatibility policy is published.
 
-### Per-user registry credential key
+## Development
 
-Per-user upstream credentials are available only when Regstair has a mounted 32-byte encryption key. Generate and mount one separately from the SQLite volume:
+Regstair requires Go 1.26 for local development.
+
+Run the complete Go suite:
 
 ```bash
-openssl rand -out regstair-credential-key 32
-sudo chown 65532:65532 regstair-credential-key
-sudo chmod 400 regstair-credential-key
-REGSTAIR_CREDENTIAL_KEY_ID=primary-2026 \
-REGSTAIR_CREDENTIAL_KEY_FILE="$PWD/regstair-credential-key" \
-  docker compose up -d --build
+GOCACHE=/tmp/regstair-go-cache go test ./...
 ```
 
-Compose mounts the file read-only at `/run/secrets/regstair-credential-key`. The key ID is stored in each encryption envelope, but key bytes never enter YAML, environment variables, SQLite, logs, or API responses. Without a configured key ID, existing OCI behavior remains available and registry-credential APIs fail closed with `503`.
-
-Backup, restore, rotation, missing/wrong-key behavior, and permanent key-loss recovery are defined in [Backup, Restore, and Credential-Key Lifecycle](docs/BACKUP_KEY_LIFECYCLE.md). Losing the only key referenced by stored upstream credentials permanently loses access to those credential values; users must replace them.
-
-Existing environment-backed YAML client deployments can migrate without an authentication flag day. Follow [YAML Client Authentication Upgrade](docs/YAML_AUTH_UPGRADE.md) and run `./scripts/upgrade-smoke.sh` to exercise the legacy-client overlap and local-token cutover against one persistent disposable database.
-
-Authenticated credential endpoints are:
-
-```text
-GET    /admin/api/account/registry-credentials
-POST   /admin/api/account/registry-credentials/{source_id}/verify-and-save
-DELETE /admin/api/account/registry-credentials/{source_id}
-```
-
-Verify-and-Save accepts `username` and `secret`; responses contain only credential metadata. Verification failures preserve the machine-readable classifications `invalid_credentials`, `insufficient_permission`, `registry_unavailable`, `verification_configuration_invalid`, and `registry_failure`.
-
-Regstair supports optional Basic client auth for the `/v2/` gateway. When `clients` are configured, Docker/curl clients must authenticate to Regstair and request events record the configured client id.
-
-Client auth example:
-
-```yaml
-clients:
-  - id: ci-builder
-    type: basic
-    username_env: REGSTAIR_CLIENT_CI_USERNAME
-    password_env: REGSTAIR_CLIENT_CI_PASSWORD
-    allowed:
-      pull:
-        - curated-library
-      push:
-        - team-a-publish
-```
-
-With that config enabled:
+Build the production image:
 
 ```bash
-docker login 127.0.0.1:8080
+docker build -t regstair:local .
 ```
 
-Configured clients are denied by default for routed pull/push operations. Add route names under `allowed.pull` and `allowed.push` to grant access.
-
-The MVP supports proxy-owned upstream Basic auth. Secrets are read from environment variables, not literal YAML values. The client authenticates to Regstair, while Regstair independently authenticates to the selected upstream.
-
-Example shape:
-
-```yaml
-credentials:
-  - id: harbor-robot
-    type: basic
-    username_env: REGSTAIR_HARBOR_USERNAME
-    password_env: REGSTAIR_HARBOR_PASSWORD
-
-sources:
-  - id: harbor-team-a
-    endpoint: http://harbor:8080
-    auth:
-      mode: proxy
-      credential_ref: harbor-robot
-```
-
-An approved source can instead select the authenticated local user's encrypted credential:
-
-```yaml
-sources:
-  - id: harbor-team-a
-    endpoint: https://harbor.example
-    enabled: true
-    auth:
-      mode: current_user
-      strategy: challenge
-    user_credentials:
-      approved: true
-      pull: true
-      push: true
-      verification_repository: regstair/credential-check
-```
-
-`strategy: challenge` is the default for credentialed sources. Regstair first performs the selected OCI operation anonymously and supplies the configured credential only when that same registry challenges it. This preserves public pulls without decrypting or transmitting a stored credential. `strategy: required` sends the selected credential immediately and should be limited to registries known to require preemptive authentication. Authentication or authorization failure never advances pull fallback.
-
-Bearer token services on the registry endpoint's own host are trusted automatically. A split token service must be approved by host, without a scheme or path:
-
-```yaml
-auth:
-  mode: proxy
-  credential_ref: docker-hub
-  strategy: challenge
-  token_hosts:
-    - auth.docker.io
-```
-
-Regstair rejects unapproved or HTTPS-downgrade token realms before sending credentials. Credentialed blob-upload continuations cannot change origin.
-
-`current_user` requires a mounted credential encryption key at startup. It accepts only an authenticated local user, looks up the exact `(user, source)` credential, and never borrows another user's credential. `none` never inspects credentials, and `proxy` continues to use only its configured shared credential.
-
-The `proxy-auth` Compose profile provides a protected local registry fixture. `./scripts/compose-proxy-auth-smoke.sh` proves authenticated pull and push plus failure with an invalid stored upstream credential. The HTTP connector also supports scoped Bearer-token challenge exchange with in-memory expiry caching, and `./scripts/harbor-smoke.sh` proves the real Harbor robot-account integration. GHCR and Docker Hub remain future compatibility targets.
-
-The current hosted-auth proposal is in [docs/AUTH_DESIGN.md](docs/AUTH_DESIGN.md).
-
-The phased admin UI and control-plane boundary is defined in [docs/ADMIN_CONTROL_PLANE.md](docs/ADMIN_CONTROL_PLANE.md).
-
-## Build Week Provenance
-
-Regstair started from [PRD.md](PRD.md) and was implemented test-first around the locked scope in [BUILD_WEEK_SCOPE.md](BUILD_WEEK_SCOPE.md).
-
-The most useful validation command is:
+Run the reproducible OCI gateway integration suite:
 
 ```bash
 ./scripts/compose-smoke.sh
 ```
 
-That single command exercises external pull/cache, protected fallback blocking, push routing, namespace rewriting, admin visibility, provenance, SQLite metadata startup, and digest deduplication.
+Additional focused suites cover Docker CLI compatibility, per-user Harbor credentials, cache performance, backup/restore, and secret-leak qualification. See [scripts](scripts/) and the [Demo Guide](docs/DEMO.md).
 
-For the authenticated path, run:
+GitHub Actions runs the Go and Compose integration gates on pushes and pull requests. A scheduled and manually dispatchable Harbor workflow deploys a real Harbor instance and verifies per-user credentials, private pull, and push through Regstair. Tags matching `v[0-9]*` run release verification, build five Linux architectures in parallel, and publish the versioned manifest to GHCR.
 
-```bash
-./scripts/compose-auth-smoke.sh
-```
+## Project
 
-For real Docker client compatibility, run:
-
-```bash
-./scripts/docker-client-smoke.sh
-```
-
-## License
+Regstair was designed and developed by James Dornan with coding assistance from OpenAI Codex. The project began as a test-first Build Week prototype and has since developed into the current authenticated OCI gateway and control plane.
 
 Regstair is available under the [MIT License](LICENSE).
+
+Copyright (c) 2026 James Dornan.

@@ -260,8 +260,8 @@
             <tbody>{{range .Sources}}
               <tr>
                 <td><code>{{.ID}}</code></td><td>{{.Name}}</td><td>{{.Type}}</td><td><code>{{.Endpoint}}</code></td>
-                <td>{{if .UserCredentials.Approved}}<span class="status success">approved</span> {{if .UserCredentials.Pull}}<span class="status neutral">pull</span>{{end}} {{if .UserCredentials.Push}}<span class="status neutral">push</span>{{end}}{{else}}<span class="subtle">not approved</span>{{end}}</td>
-                <td>{{if .UserCredentials.Approved}}<code>{{.UserCredentials.VerificationRepository}}</code>{{else}}<span class="subtle">not applicable</span>{{end}}</td>
+                <td><span class="status success">configured</span> {{if .UserCredentials.Pull}}<span class="status neutral">pull</span>{{end}} {{if .UserCredentials.Push}}<span class="status neutral">push</span>{{end}}</td>
+                <td>{{if .UserCredentials.VerificationRepository}}<code>{{.UserCredentials.VerificationRepository}}</code>{{else}}<span class="subtle">registry challenge</span>{{end}}</td>
                 <td>{{if .Routes}}{{range $i, $route := .Routes}}{{if $i}}, {{end}}<code>{{$route}}</code>{{end}}{{else}}<span class="subtle">unused</span>{{end}}</td>
                 <td>{{if .Enabled}}<span class="status success">enabled</span>{{else}}<span class="status danger">disabled</span>{{end}}</td>
               </tr>

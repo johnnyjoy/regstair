@@ -131,7 +131,7 @@ func credentialTestService(t *testing.T, verifier CredentialVerifier) (*metadata
 	if err != nil {
 		t.Fatal(err)
 	}
-	sources := []config.Source{{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, Auth: config.Auth{TokenHosts: []string{"auth.harbor.example"}}, UserCredentials: config.UserCredentials{Approved: true, Pull: true, Push: true, VerificationRepository: "regstair/check"}}}
+	sources := []config.Source{{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, Auth: config.Auth{TokenHosts: []string{"auth.harbor.example"}}, UserCredentials: config.UserCredentials{Pull: true, Push: true, VerificationRepository: "regstair/check"}}}
 	return repo, NewRegistryCredentialService(repo, keyring, verifier, sources)
 }
 

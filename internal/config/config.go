@@ -29,7 +29,6 @@ type Source struct {
 }
 
 type UserCredentials struct {
-	Approved               bool   `yaml:"approved" json:"approved"`
 	Pull                   bool   `yaml:"pull" json:"pull"`
 	Push                   bool   `yaml:"push" json:"push"`
 	VerificationRepository string `yaml:"verification_repository" json:"verification_repository"`
@@ -68,8 +67,9 @@ type Rewrite struct {
 }
 
 const (
-	AuthStrategyChallenge = "challenge"
-	AuthStrategyRequired  = "required"
+	AuthStrategyChallenge           = "challenge"
+	AuthStrategyProxy               = "proxy"
+	AuthStrategyCurrentUserRequired = "current_user_required"
 )
 
 func LoadFile(path string) (*Config, error) {
@@ -139,7 +139,6 @@ func (c Config) validate() error {
 	}
 
 	sourceIDs := map[string]struct{}{}
-	sourcesByID := map[string]Source{}
 	for i, source := range c.Sources {
 		if source.ID == "" {
 			return fmt.Errorf("source %d has no id", i)
@@ -148,7 +147,6 @@ func (c Config) validate() error {
 			return fmt.Errorf("duplicate source id %q", source.ID)
 		}
 		sourceIDs[source.ID] = struct{}{}
-		sourcesByID[source.ID] = source
 		if source.Endpoint == "" {
 			return fmt.Errorf("source %q has no endpoint", source.ID)
 		}
@@ -163,18 +161,6 @@ func (c Config) validate() error {
 			return err
 		}
 	}
-	for _, route := range c.Routes {
-		for _, sourceID := range route.Pull.Sources {
-			source, ok := sourcesByID[sourceID]
-			if ok && source.UserCredentials.Approved && !source.UserCredentials.Pull {
-				return fmt.Errorf("route %q pulls from current-user source %q that does not allow user pull credentials", route.Name, sourceID)
-			}
-		}
-		if source, ok := sourcesByID[route.Push.Destination]; ok && source.UserCredentials.Approved && !route.Push.Deny && !source.UserCredentials.Push {
-			return fmt.Errorf("route %q pushes to current-user source %q that does not allow user push credentials", route.Name, source.ID)
-		}
-	}
-
 	return nil
 }
 
@@ -191,24 +177,12 @@ func validateSourceEndpoint(source Source) (*url.URL, error) {
 
 func validateUserCredentials(source Source, endpoint *url.URL) error {
 	policy := source.UserCredentials
-	configured := policy.Pull || policy.Push || policy.VerificationRepository != "" || policy.Guidance != "" || policy.AllowInsecure
-	if !policy.Approved {
-		if configured {
-			return fmt.Errorf("source %q has user credential settings but is not approved", source.ID)
-		}
-		return nil
-	}
-	if !policy.Pull && !policy.Push {
-		return fmt.Errorf("source %q approved user credentials allow no operations", source.ID)
-	}
-	if policy.VerificationRepository == "" {
-		return fmt.Errorf("source %q approved user credentials require verification_repository", source.ID)
-	}
-	if policy.VerificationRepository != strings.TrimSpace(policy.VerificationRepository) || strings.ContainsAny(policy.VerificationRepository, " :@\t\r\n") || strings.HasPrefix(policy.VerificationRepository, "/") || strings.HasSuffix(policy.VerificationRepository, "/") || strings.Contains(policy.VerificationRepository, "..") {
+	credentialConfigured := policy.Pull || policy.Push || policy.VerificationRepository != "" || policy.Guidance != "" || policy.AllowInsecure
+	if policy.VerificationRepository != "" && (policy.VerificationRepository != strings.TrimSpace(policy.VerificationRepository) || strings.ContainsAny(policy.VerificationRepository, " :@\t\r\n") || strings.HasPrefix(policy.VerificationRepository, "/") || strings.HasSuffix(policy.VerificationRepository, "/") || strings.Contains(policy.VerificationRepository, "..")) {
 		return fmt.Errorf("source %q has invalid verification_repository", source.ID)
 	}
-	if endpoint.Scheme != "https" && !policy.AllowInsecure {
-		return fmt.Errorf("source %q approved user credentials require HTTPS or allow_insecure", source.ID)
+	if credentialConfigured && endpoint.Scheme != "https" && !policy.AllowInsecure {
+		return fmt.Errorf("source %q requires HTTPS or explicit allow_insecure", source.ID)
 	}
 	return nil
 }
@@ -218,7 +192,7 @@ func validateSourceAuth(source Source) error {
 	if strategy == "" {
 		strategy = AuthStrategyChallenge
 	}
-	if strategy != AuthStrategyChallenge && strategy != AuthStrategyRequired {
+	if strategy != AuthStrategyChallenge && strategy != AuthStrategyProxy && strategy != AuthStrategyCurrentUserRequired {
 		return fmt.Errorf("source %q has unsupported auth strategy %q", source.ID, strategy)
 	}
 	seenTokenHosts := map[string]struct{}{}
@@ -233,8 +207,5 @@ func validateSourceAuth(source Source) error {
 		seenTokenHosts[key] = struct{}{}
 	}
 
-	if (source.Auth.Strategy != "" || len(source.Auth.TokenHosts) > 0) && !source.UserCredentials.Approved {
-		return fmt.Errorf("source %q authentication compatibility settings require approved user credentials", source.ID)
-	}
 	return nil
 }

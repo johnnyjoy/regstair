@@ -8,3 +8,6 @@ dist
 bin
 /regstair
 *.test
+node_modules
+internal/admin/frontend-dist
+*.tsbuildinfo

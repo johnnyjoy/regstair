@@ -17,6 +17,40 @@ import (
 	"regstair/internal/metadata"
 )
 
+func TestHTTPListenerRedirectsApplicationTrafficToHTTPS(t *testing.T) {
+	application := &App{httpsListenAddr: ":8443", handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })}
+	response := httptest.NewRecorder()
+	application.httpHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://regstair.example.test:8080/registry-access?view=all", nil))
+	if response.Code != http.StatusPermanentRedirect || response.Header().Get("Location") != "https://regstair.example.test:8443/registry-access?view=all" {
+		t.Fatalf("redirect = %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestHTTPListenerKeepsHealthChecksAvailable(t *testing.T) {
+	application := &App{httpsListenAddr: ":8443", handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}
+	response := httptest.NewRecorder()
+	application.httpHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://regstair:8080/healthz", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("health status = %d", response.Code)
+	}
+}
+
+func TestHTTPListenerOffersPublicCACertificateForTrustBootstrap(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "regstair-ca.crt")
+	if err := os.WriteFile(caFile, []byte("PUBLIC CA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	application := &App{httpsListenAddr: ":8443", tlsCAFile: caFile}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/regstair-ca.crt", application.handleCACertificate)
+	application.handler = mux
+	response := httptest.NewRecorder()
+	application.httpHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://regstair:8080/regstair-ca.crt", nil))
+	if response.Code != http.StatusOK || response.Body.String() != "PUBLIC CA" {
+		t.Fatalf("CA response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestNewLoadsConfigAndServesHealthAndGateway(t *testing.T) {
 	app, err := New(Options{
 		ConfigPath:   filepath.Join("..", "..", "config", "regstair.example.yaml"),
@@ -79,7 +113,7 @@ func TestNewCredentialEncryptionKeyConfiguration(t *testing.T) {
 	}
 }
 
-func TestNewRejectsCredentialCapableSourceWithoutCredentialKey(t *testing.T) {
+func TestNewKeepsProxyAvailableWithoutOptionalCredentialKey(t *testing.T) {
 	configPath := writeAppConfig(t, `
 version: 1
 sources:
@@ -87,15 +121,14 @@ sources:
     endpoint: https://harbor.example
     enabled: true
     user_credentials:
-      approved: true
       pull: true
       push: true
       verification_repository: regstair/check
 routes: []
 `)
 	_, err := New(Options{ConfigPath: configPath, ContentRoot: t.TempDir(), ListenAddr: "127.0.0.1:0", StubSources: true})
-	if err == nil || !strings.Contains(err.Error(), "no credential encryption key") {
-		t.Fatalf("New() error = %v, want fail-closed credential key error", err)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
 	}
 }
 

@@ -8,9 +8,35 @@ import (
 	"testing"
 	"time"
 
+	"regstair/internal/app"
 	"regstair/internal/auth"
 	"regstair/internal/metadata"
 )
+
+func TestConfigureTLSGeneratesAndReusesLocalIdentity(t *testing.T) {
+	dir := t.TempDir()
+	options := app.Options{HTTPSListenAddr: ":8443"}
+	if err := configureTLS(&options, dir, "localhost,127.0.0.1,regstair.example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if options.TLSCertFile == "" || options.TLSKeyFile == "" || options.TLSCAFile == "" {
+		t.Fatalf("TLS files were not configured: %#v", options)
+	}
+	again := app.Options{HTTPSListenAddr: ":8443"}
+	if err := configureTLS(&again, dir, "localhost,127.0.0.1,regstair.example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if options.TLSCertFile != again.TLSCertFile {
+		t.Fatal("persistent TLS identity was not reused")
+	}
+}
+
+func TestConfigureTLSRejectsPartialOperatorIdentity(t *testing.T) {
+	options := app.Options{HTTPSListenAddr: ":8443", TLSCertFile: "certificate-only"}
+	if err := configureTLS(&options, t.TempDir(), "localhost"); err == nil {
+		t.Fatal("partial operator TLS identity was accepted")
+	}
+}
 
 func TestRunAdminResetPasswordRevokesIdentityAndAuditsRecovery(t *testing.T) {
 	dir := t.TempDir()

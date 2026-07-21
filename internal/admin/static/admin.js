@@ -24,7 +24,7 @@
 				return;
 			}
 			submit.disabled = true;
-			result.textContent = "Creating the control-plane administrator...";
+			result.textContent = "Creating the Regstair administrator...";
 			try {
 				const response = await fetch("/admin/api/setup", {method: "POST", headers: {"Content-Type": "application/json", "X-Regstair-Setup-Token": setupForm.dataset.setupToken}, body: JSON.stringify({username: setupForm.elements.username.value, password, display_name: setupForm.elements.display_name.value, email: setupForm.elements.email.value})});
 				setupForm.elements.password.value = "";

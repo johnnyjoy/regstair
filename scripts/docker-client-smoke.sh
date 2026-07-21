@@ -159,6 +159,8 @@ echo "Starting Docker client compatibility environment..."
 docker compose -p "$project" down -v >/dev/null 2>&1 || true
 REGSTAIR_CONFIG="$config_path" \
 REGSTAIR_PORT="$regstair_port" \
+REGSTAIR_HTTPS_LISTEN= \
+REGSTAIR_HTTPS_PORT=0 \
 INTERNAL_REGISTRY_PORT="$internal_port" \
 EXTERNAL_REGISTRY_PORT="$external_port" \
 DESTINATION_REGISTRY_PORT="$destination_port" \

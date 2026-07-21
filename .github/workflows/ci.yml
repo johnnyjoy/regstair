@@ -15,6 +15,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend-test:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test and build frontend
+        run: |
+          npm test
+          npm run typecheck
+          npm run build
+
   test:
     name: Go tests
     runs-on: ubuntu-latest
@@ -30,6 +53,17 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build embedded frontend
+        run: |
+          npm ci
+          npm run build
+
       - name: Verify dependency checksums
         run: |
           test -f go.sum || { echo "go.sum must be committed" >&2; exit 1; }
@@ -41,7 +75,7 @@ jobs:
 
   image-smoke:
     name: Build and smoke-test image
-    needs: test
+    needs: [test, frontend-test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

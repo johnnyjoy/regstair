@@ -64,7 +64,7 @@ func NewRegistryCredentialService(repo securityRepository, keyring *SecretKeyrin
 
 func (s *RegistryCredentialService) VerifyAndSave(ctx context.Context, userID, sourceID, username string, secret []byte) (*RegistryCredentialView, error) {
 	source, ok := s.sources[sourceID]
-	if !ok || !source.Enabled || !source.UserCredentials.Approved {
+	if !ok || !source.Enabled {
 		return nil, publicVerificationError(ErrVerificationConfig)
 	}
 	if username == "" || len(secret) == 0 {
@@ -120,7 +120,7 @@ func (s *RegistryCredentialService) Remove(ctx context.Context, userID, sourceID
 		return security.NewPublicError("confirmation_required", "Credential removal requires confirmation.", errors.New("credential removal was not confirmed"))
 	}
 	source, ok := s.sources[sourceID]
-	if !ok || !source.UserCredentials.Approved {
+	if !ok || !source.Enabled {
 		return publicVerificationError(ErrVerificationConfig)
 	}
 	credential, err := s.repo.FindRegistryCredential(ctx, userID, sourceID)

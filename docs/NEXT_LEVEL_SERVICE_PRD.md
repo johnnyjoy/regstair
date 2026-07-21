@@ -272,7 +272,7 @@ The deployment administrator configures in YAML:
 
 The administrator may also configure a shared Regstair-owned upstream credential where the existing product already supports it.
 
-SQLite stores user credentials keyed to the stable configured source ID. The UI presents this approved-registry projection read-only. Registry and route mutation, YAML import, and database-owned configuration revisions are outside this phase.
+SQLite stores user credentials keyed to the stable configured source ID. Every enabled configured source is an approved credential target; there is no second approval flag. The UI presents this configured-registry projection read-only. Registry mutation and database-owned registry configuration revisions are outside this phase; route ownership is governed by ADR-0009.
 
 ---
 

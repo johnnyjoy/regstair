@@ -31,7 +31,7 @@ func NewRuntimeCredentialSelector(repo securityRepository, keyring *SecretKeyrin
 		if len(source.Auth.TokenHosts) > 0 {
 			options = append(options, registry.WithAllowedTokenHosts(source.Auth.TokenHosts...))
 		}
-		if source.Auth.Strategy == config.AuthStrategyRequired {
+		if source.Auth.Strategy == config.AuthStrategyCurrentUserRequired {
 			options = append(options, registry.WithPreemptiveBasicAuth())
 		}
 		return registry.NewHTTPConnector(source.ID, source.Endpoint, client, options...)
@@ -44,17 +44,11 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 	if !ok || !source.Enabled {
 		return nil, "", fmt.Errorf("%w: source %s", registry.ErrUnavailable, sourceID)
 	}
-	if !source.UserCredentials.Approved {
-		return s.connectors[sourceID], "anonymous", nil
-	}
 	if principal.Kind != identity.KindLocalUser || principal.ID == "" {
-		if operation == metadata.OperationPull {
+		if operation == metadata.OperationPull && (source.Auth.Strategy == "" || source.Auth.Strategy == config.AuthStrategyChallenge) {
 			return s.connectors[sourceID], "anonymous", nil
 		}
 		return nil, "", fmt.Errorf("%w: local user authentication is required", registry.ErrCredentialRequired)
-	}
-	if (operation == metadata.OperationPull && !source.UserCredentials.Pull) || (operation == metadata.OperationPush && !source.UserCredentials.Push) {
-		return nil, "", fmt.Errorf("%w: credential is not approved for %s", registry.ErrAuthorization, operation)
 	}
 	user, err := s.repo.FindUserByID(ctx, principal.ID)
 	if err != nil {
@@ -63,12 +57,15 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 	if user == nil || !user.Enabled {
 		return nil, "", fmt.Errorf("%w: local user is disabled", registry.ErrAuthorization)
 	}
+	if source.Auth.Strategy == config.AuthStrategyProxy {
+		return s.connectors[sourceID], "proxy", nil
+	}
 	credential, err := s.repo.FindRegistryCredential(ctx, principal.ID, sourceID)
 	if err != nil {
 		return nil, "", err
 	}
 	if credential == nil {
-		if operation == metadata.OperationPull {
+		if operation == metadata.OperationPull && source.Auth.Strategy != config.AuthStrategyCurrentUserRequired {
 			return s.connectors[sourceID], "anonymous", nil
 		}
 		return nil, "", fmt.Errorf("%w: no credential for source %s", registry.ErrCredentialRequired, sourceID)
@@ -85,22 +82,28 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 	return connector, "current_user", nil
 }
 
-func (s *RuntimeCredentialSelector) AuthorizeCache(ctx context.Context, principal identity.Principal, sourceID string, operation metadata.Operation) (string, error) {
-	source, ok := s.sources[sourceID]
-	if !ok || !source.UserCredentials.Approved {
-		return "anonymous", nil
+func (s *RuntimeCredentialSelector) AuthorizeCache(ctx context.Context, principal identity.Principal, binding metadata.CacheBinding, operation metadata.Operation) (string, error) {
+	source, ok := s.sources[binding.Source]
+	if !ok || !source.Enabled {
+		return "", registry.ErrAuthorization
 	}
-	if operation == metadata.OperationPull {
+	if binding.Access == metadata.CacheAccessChallenge && operation == metadata.OperationPull {
 		return "anonymous", nil
 	}
 	if principal.Kind != identity.KindLocalUser || principal.ID == "" {
 		return "", registry.ErrCredentialRequired
 	}
+	if binding.Access == metadata.CacheAccessCurrentUserRequired && principal.ID != binding.UserID {
+		return "", registry.ErrAuthorization
+	}
 	user, err := s.repo.FindUserByID(ctx, principal.ID)
 	if err != nil || user == nil || !user.Enabled {
 		return "", registry.ErrAuthorization
 	}
-	credential, err := s.repo.FindRegistryCredential(ctx, principal.ID, sourceID)
+	if binding.Access == metadata.CacheAccessProxy {
+		return "proxy", nil
+	}
+	credential, err := s.repo.FindRegistryCredential(ctx, principal.ID, binding.Source)
 	if err != nil {
 		return "", err
 	}
