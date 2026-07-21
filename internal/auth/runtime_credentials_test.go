@@ -35,7 +35,7 @@ func TestRuntimeCredentialSelectorUsesExactLocalUserCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := config.Source{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, UserCredentials: config.UserCredentials{Pull: true, Push: true}}
+	source := config.Source{ID: "harbor", Endpoint: "https://harbor.example", Enabled: true, Auth: config.Auth{Strategy: config.AuthStrategyCurrentUserRequired}, UserCredentials: config.UserCredentials{Pull: true, Push: true}}
 	selector := NewRuntimeCredentialSelector(repo, keyring, []config.Source{source}, nil, nil)
 	var gotUsername, gotPassword string
 	selector.factory = func(_ config.Source, username, password string) (registry.Connector, error) {
@@ -81,6 +81,24 @@ func TestRuntimeCredentialSelectorKeepsPublicPullAnonymousWithoutCredential(t *t
 		if err != nil || connector != base || credentialSource != "anonymous" {
 			t.Fatalf("ConnectorFor(%#v) = %#v, %q, %v", principal, connector, credentialSource, err)
 		}
+	}
+}
+
+func TestRuntimeCredentialSelectorChallengeAllowsAuthenticatedPushAttemptWithoutUpstreamCredential(t *testing.T) {
+	repo := openAuthRepository(t)
+	if _, err := repo.CreateUser(context.Background(), metadata.User{ID: "user-1", Username: "alice", PasswordHash: "hash", Access: metadata.UserAccessUser, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	base := registry.NewFakeConnector("fixture")
+	source := config.Source{ID: "fixture", Endpoint: "http://fixture:5000", Enabled: true, Auth: config.Auth{Strategy: config.AuthStrategyChallenge}}
+	selector := NewRuntimeCredentialSelector(repo, nil, []config.Source{source}, map[string]registry.Connector{"fixture": base}, nil)
+
+	connector, credentialSource, err := selector.ConnectorFor(context.Background(), identity.Principal{Kind: identity.KindLocalUser, ID: "user-1"}, "fixture", metadata.OperationPush)
+	if err != nil || connector != base || credentialSource != "anonymous" {
+		t.Fatalf("ConnectorFor(challenge push) = %#v, %q, %v", connector, credentialSource, err)
+	}
+	if _, _, err := selector.ConnectorFor(context.Background(), identity.Anonymous(), "fixture", metadata.OperationPush); err == nil {
+		t.Fatal("anonymous local client was allowed to push")
 	}
 }
 

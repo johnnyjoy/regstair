@@ -76,6 +76,45 @@ routes:
 	}
 }
 
+func TestExampleConfigProvidesMultiRegistryRoutingFabric(t *testing.T) {
+	cfg, err := LoadFile(filepath.Join("..", "..", "config", "regstair.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(cfg.Sources), 9; got != want {
+		t.Fatalf("source count = %d, want %d", got, want)
+	}
+	policyConfig, err := cfg.PolicyConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(policyConfig.Routes), 11; got != want {
+		t.Fatalf("route count = %d, want %d", got, want)
+	}
+	want := map[string]string{
+		"docker-hub-namespaced":        "dockerhub/",
+		"github-container-registry":    "ghcr/",
+		"quay":                         "quay/",
+		"kubernetes":                   "k8s/",
+		"google-container-registry":    "gcr/",
+		"microsoft-container-registry": "mcr/",
+		"ecr-public":                   "ecr-public/",
+		"gitlab-container-registry":    "gitlab/",
+		"nvidia-container-registry":    "nvcr/",
+	}
+	for _, route := range policyConfig.Routes {
+		if prefix, ok := want[route.Name]; ok {
+			if route.Rewrite.StripPrefix != prefix {
+				t.Fatalf("route %q strip prefix = %q, want %q", route.Name, route.Rewrite.StripPrefix, prefix)
+			}
+			delete(want, route.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing provider routes: %v", want)
+	}
+}
+
 func TestLoadFileRejectsUnknownFields(t *testing.T) {
 	path := writeConfig(t, `
 version: 1

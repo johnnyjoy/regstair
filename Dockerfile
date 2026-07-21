@@ -23,5 +23,5 @@ COPY --from=build --chown=65532:65532 /out/regstair-content /var/lib/regstair/co
 COPY --from=build --chown=65532:65532 /out/regstair-tls /var/lib/regstair/tls
 COPY --from=build --chown=65532:65532 /out/regstair-credentials /var/lib/regstair/credentials
 USER nonroot:nonroot
-EXPOSE 8080 8443
+EXPOSE 80 443
 ENTRYPOINT ["/regstair"]

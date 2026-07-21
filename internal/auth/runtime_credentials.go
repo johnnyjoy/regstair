@@ -65,7 +65,7 @@ func (s *RuntimeCredentialSelector) ConnectorFor(ctx context.Context, principal 
 		return nil, "", err
 	}
 	if credential == nil {
-		if operation == metadata.OperationPull && source.Auth.Strategy != config.AuthStrategyCurrentUserRequired {
+		if source.Auth.Strategy == "" || source.Auth.Strategy == config.AuthStrategyChallenge {
 			return s.connectors[sourceID], "anonymous", nil
 		}
 		return nil, "", fmt.Errorf("%w: no credential for source %s", registry.ErrCredentialRequired, sourceID)

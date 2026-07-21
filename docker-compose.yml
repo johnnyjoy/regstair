@@ -21,17 +21,21 @@ services:
     command:
       - -config=/etc/regstair/regstair.yaml
       - -content-root=/var/lib/regstair/content
-      - -listen=:8080
-      - -https-listen=${REGSTAIR_HTTPS_LISTEN-:8443}
-      - -https-public-port=${REGSTAIR_HTTPS_PORT:-9443}
+      - -listen=:80
+      - -https-listen=${REGSTAIR_HTTPS_LISTEN-:443}
+      - -https-public-port=${REGSTAIR_HTTPS_PORT:-443}
       - -tls-dir=/var/lib/regstair/tls
       - -tls-hosts=${REGSTAIR_TLS_HOSTS:-localhost,127.0.0.1,::1,regstair}
       - -credential-key-id=${REGSTAIR_CREDENTIAL_KEY_ID:-local-primary}
       - -credential-key-file=/var/lib/regstair/credentials/key
       - -generate-credential-key=${REGSTAIR_GENERATE_CREDENTIAL_KEY:-true}
     ports:
-      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_PORT:-9080}:8080"
-      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_HTTPS_PORT:-9443}:8443"
+      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_PORT:-80}:80"
+      - "${REGSTAIR_BIND_ADDRESS:-0.0.0.0}:${REGSTAIR_HTTPS_PORT:-443}:443"
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

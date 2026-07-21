@@ -29,10 +29,217 @@ sources:
       push: true
       guidance: Use your GitHub username and a personal access token with package permissions.
 
+  - id: quay
+    name: Quay.io
+    endpoint: https://quay.io
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+    user_credentials:
+      pull: true
+      push: true
+      guidance: Use your Quay username and an encrypted CLI password or robot account token.
+
+  - id: kubernetes
+    name: Kubernetes Image Registry
+    endpoint: https://registry.k8s.io
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+
+  - id: google-container-registry
+    name: Google Container Registry
+    endpoint: https://gcr.io
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+    user_credentials:
+      pull: true
+      push: true
+      guidance: Use the username and access token or service-account credential accepted by Google Container Registry.
+
+  - id: microsoft-container-registry
+    name: Microsoft Container Registry
+    endpoint: https://mcr.microsoft.com
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+
+  - id: ecr-public
+    name: Amazon ECR Public Gallery
+    endpoint: https://public.ecr.aws
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+    user_credentials:
+      pull: true
+      push: true
+      guidance: Use the temporary username and authorization token issued by AWS for ECR Public.
+
+  - id: gitlab-container-registry
+    name: GitLab Container Registry
+    endpoint: https://registry.gitlab.com
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+      token_hosts:
+        - gitlab.com
+    user_credentials:
+      pull: true
+      push: true
+      guidance: Use your GitLab username and a deploy, project, group, or personal access token with registry permissions.
+
+  - id: nvidia-container-registry
+    name: NVIDIA NGC Catalog
+    endpoint: https://nvcr.io
+    type: external
+    enabled: true
+    auth:
+      strategy: challenge
+    user_credentials:
+      pull: true
+      guidance: Use the NGC username and API key issued for your NVIDIA account.
+
 routes:
   - name: docker-hub-library
     match: library/**
     precedence: 10
+    pull:
+      sources:
+        - docker-hub
+      authoritative: docker-hub
+      external_fallback: false
+    push:
+      destination: docker-hub
+
+  - name: docker-hub-namespaced
+    match: dockerhub/**
+    precedence: 20
+    pull:
+      sources:
+        - docker-hub
+      authoritative: docker-hub
+      external_fallback: false
+    push:
+      destination: docker-hub
+    rewrite:
+      strip_prefix: dockerhub/
+
+  - name: github-container-registry
+    match: ghcr/**
+    precedence: 30
+    pull:
+      sources:
+        - github-container-registry
+      authoritative: github-container-registry
+      external_fallback: false
+    push:
+      destination: github-container-registry
+    rewrite:
+      strip_prefix: ghcr/
+
+  - name: quay
+    match: quay/**
+    precedence: 40
+    pull:
+      sources:
+        - quay
+      authoritative: quay
+      external_fallback: false
+    push:
+      destination: quay
+    rewrite:
+      strip_prefix: quay/
+
+  - name: kubernetes
+    match: k8s/**
+    precedence: 50
+    pull:
+      sources:
+        - kubernetes
+      authoritative: kubernetes
+      external_fallback: false
+    push:
+      deny: true
+    rewrite:
+      strip_prefix: k8s/
+
+  - name: google-container-registry
+    match: gcr/**
+    precedence: 60
+    pull:
+      sources:
+        - google-container-registry
+      authoritative: google-container-registry
+      external_fallback: false
+    push:
+      destination: google-container-registry
+    rewrite:
+      strip_prefix: gcr/
+
+  - name: microsoft-container-registry
+    match: mcr/**
+    precedence: 70
+    pull:
+      sources:
+        - microsoft-container-registry
+      authoritative: microsoft-container-registry
+      external_fallback: false
+    push:
+      deny: true
+    rewrite:
+      strip_prefix: mcr/
+
+  - name: ecr-public
+    match: ecr-public/**
+    precedence: 80
+    pull:
+      sources:
+        - ecr-public
+      authoritative: ecr-public
+      external_fallback: false
+    push:
+      destination: ecr-public
+    rewrite:
+      strip_prefix: ecr-public/
+
+  - name: gitlab-container-registry
+    match: gitlab/**
+    precedence: 90
+    pull:
+      sources:
+        - gitlab-container-registry
+      authoritative: gitlab-container-registry
+      external_fallback: false
+    push:
+      destination: gitlab-container-registry
+    rewrite:
+      strip_prefix: gitlab/
+
+  - name: nvidia-container-registry
+    match: nvcr/**
+    precedence: 100
+    pull:
+      sources:
+        - nvidia-container-registry
+      authoritative: nvidia-container-registry
+      external_fallback: false
+    push:
+      deny: true
+    rewrite:
+      strip_prefix: nvcr/
+
+  # Docker Hub is the default only after every explicit provider namespace has
+  # had a chance to match. This preserves familiar user/repository image names.
+  - name: docker-hub-default
+    match: "**"
+    precedence: 1000
     pull:
       sources:
         - docker-hub

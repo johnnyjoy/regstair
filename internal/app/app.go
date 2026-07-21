@@ -66,7 +66,7 @@ func New(options Options) (*App, error) {
 		return nil, fmt.Errorf("content root is required")
 	}
 	if options.ListenAddr == "" {
-		options.ListenAddr = ":8080"
+		options.ListenAddr = ":80"
 	}
 
 	fileConfig, err := config.LoadFile(options.ConfigPath)
